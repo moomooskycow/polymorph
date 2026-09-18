@@ -1,0 +1,64 @@
+# Implementation contract
+
+Chrome MV3 extension. Jev judges each post against the operator's English
+rules and collapses matches. `USER_STORIES.md` is the root contract. Cite a
+story id in every behavioral change.
+
+## Locked decisions (do not reopen)
+
+- Public repo, unpacked load, Chrome only. No Firefox, no Web Store.
+- Jev model `typesafe/jev-1.13` via OpenRouter
+  `POST https://openrouter.ai/api/alpha/decisions`. Never Astra.
+- API key in `chrome.storage.local` only. Background service worker is the
+  only process that reads it or calls OpenRouter.
+- One post per Jev request. All enabled rules are parallel `choice` questions
+  (`match` / `no_match`) on that one post. Never put two posts in one `state`.
+- Gate: `choice === match` AND `probabilities.match > 0.85` AND
+  `confidence >= 0.70`. Otherwise leave the post.
+- Fail open on network/API errors.
+- Default allowlist: X, Reddit, HN, YouTube. Engine can run on any other
+  host the operator adds. Hard denylist is not overridable from the popup.
+- Match action: collapse to a one-line bar with the rule name and restore.
+  Per-rule face may be `collapse` | `kitten` | `meme`. Faces are bundled SVGs.
+- Example rules ship disabled.
+- Threshold defaults: 0.85 / 0.70.
+
+## Shape
+
+Vanilla TypeScript, ES modules, Vite for the extension build, Vitest for
+pure functions. No React, no Husky, no i18n, no Sploot, no live image CDN.
+
+```
+src/background.ts      service worker: Jev, cache, storage
+src/content.ts         host check, adapters, collapse UI (shadow DOM)
+src/popup/             master switch, current-host toggle, collapsed count
+src/options/           key, rules editor, allowlist, read-only denylist
+src/hosts.ts           allowlist + hard denylist
+src/policy.ts          rules → Jev questions, gate
+src/jev/               client, cache, gate
+src/adapters/          x, reddit, hn, youtube, generic
+assets/faces/          bundled SVG kittens and meme cards
+```
+
+Content script matches `<all_urls>` but MUST check the denylist before any
+`innerText` read. Denylisted pages: no DOM scrape, no Jev.
+
+Adapters own "what is a post." Generic adapter: `article`, `[role="article"]`,
+skip `nav, header, footer, aside, form, [contenteditable], button`. Skip
+nodes under 40 characters of visible text.
+
+## Jev call
+
+State is JSON text, capped at 24,000 characters:
+
+```
+{ "site": "x.com", "text": "<visible innerText of one post>" }
+```
+
+No author ids, no HTML, no cookies. `HTTP-Referer` / `X-Title`: Polymorph.
+
+## Verification
+
+`pnpm test` must cover hosts, gate, policy, cache, collapse markup, faces.
+Do not claim X/Reddit DOM behavior verified without a fixture. Load unpacked
+from `dist/` as documented in README.
