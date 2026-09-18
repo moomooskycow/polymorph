@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="surprised face">
+  <title>Polymorph meme face</title>
+  <g stroke="#f2c94c" stroke-width="3" stroke-linecap="round">
+    <path d="M32 2 V9" />
+    <path d="M32 55 V62" />
+    <path d="M2 32 H9" />
+    <path d="M55 32 H62" />
+    <path d="M10.8 10.8 L15.8 15.8" />
+    <path d="M48.2 48.2 L53.2 53.2" />
+    <path d="M53.2 10.8 L48.2 15.8" />
+    <path d="M15.8 48.2 L10.8 53.2" />
+  </g>
+  <circle cx="32" cy="32" r="20" fill="#f7d774" stroke="#2c2620" stroke-width="2" />
+  <ellipse cx="24.5" cy="28" rx="4.2" ry="5" fill="#ffffff" stroke="#2c2620" stroke-width="1.6" />
+  <ellipse cx="39.5" cy="28" rx="4.2" ry="5" fill="#ffffff" stroke="#2c2620" stroke-width="1.6" />
+  <circle cx="24.5" cy="29" r="1.8" fill="#2c2620" />
+  <circle cx="39.5" cy="29" r="1.8" fill="#2c2620" />
+  <ellipse cx="32" cy="43" rx="5" ry="6.5" fill="#2c2620" />
+  <ellipse cx="32" cy="45.5" rx="2.6" ry="3" fill="#c65b5b" />
+</svg>
