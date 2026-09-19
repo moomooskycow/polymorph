@@ -3,6 +3,7 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.22.0",
   "description": "Chrome MV3 extension that transforms posts matching English rules judged by Jev.",
   "license": "MIT",
   "scripts": {
