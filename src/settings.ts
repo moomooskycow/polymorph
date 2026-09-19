@@ -1,39 +1,27 @@
-import { DEFAULT_ALLOWLIST, DEFAULT_REPLACEMENT_MIX, EXAMPLE_RULES } from './defaults';
+import { DEFAULT_ALLOWLIST, EXAMPLE_RULES } from './defaults';
 import { normalizeHost } from './hosts';
-import type { Face, ReplacementMix, Rule, Settings } from './types';
-
-const FACES: readonly Face[] = ['inherit', 'collapse', 'cute', 'meme', 'motivation'];
-const MIXES: readonly ReplacementMix[] = ['mixed', 'collapse', 'cute', 'meme', 'motivation'];
-
-/** US-007: v1 stored rules keep working. `kitten` becomes `cute`. */
-const LEGACY_FACES: Record<string, Face> = { kitten: 'cute' };
+import type { Rule, Settings } from './types';
 
 const RULE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-/** Non-secret settings shape. The OpenRouter key lives in `src/jev/key.ts`. */
-export const SETTINGS_KEYS = ['masterEnabled', 'rules', 'allowlist', 'replacementMix'] as const;
+/**
+ * Non-secret settings shape. The OpenRouter key lives in `src/jev/key.ts`;
+ * replacement media lives in IndexedDB (`src/media/`), not in this object.
+ */
+export const SETTINGS_KEYS = ['masterEnabled', 'rules', 'allowlist'] as const;
 
 export function defaultSettings(): Settings {
   return {
     masterEnabled: true,
     rules: EXAMPLE_RULES.map((rule) => ({ ...rule })),
     allowlist: [...DEFAULT_ALLOWLIST],
-    replacementMix: DEFAULT_REPLACEMENT_MIX,
   };
 }
 
-/** Face values arrive from storage untyped; normalize without enabling anything. */
-export function normalizeFace(raw: unknown): Face {
-  if (typeof raw !== 'string') return 'inherit';
-  if (raw in LEGACY_FACES) return LEGACY_FACES[raw] as Face;
-  return FACES.includes(raw as Face) ? (raw as Face) : 'inherit';
-}
-
-export function normalizeMix(raw: unknown): ReplacementMix {
-  return MIXES.includes(raw as ReplacementMix) ? (raw as ReplacementMix) : DEFAULT_REPLACEMENT_MIX;
-}
-
-/** Drops anything that is not a well-formed rule; ids must be unique slugs. */
+/**
+ * US-014 migration: old rule shapes are tolerated. Legacy `face`/`kitten`/
+ * `replacementMix` values are dropped, never interpreted as enable flags.
+ */
 export function sanitizeRules(input: unknown): Rule[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
@@ -52,7 +40,6 @@ export function sanitizeRules(input: unknown): Rule[] {
       name,
       instructions,
       enabled: candidate.enabled === true,
-      face: normalizeFace(candidate.face),
     });
   }
   return rules;
@@ -65,8 +52,7 @@ export function mergeSettings(raw: Record<string, unknown>): Settings {
     typeof raw.masterEnabled === 'boolean' ? raw.masterEnabled : base.masterEnabled;
   const rules = Array.isArray(raw.rules) ? sanitizeRules(raw.rules) : base.rules;
   const allowlist = Array.isArray(raw.allowlist) ? dedupeHosts(raw.allowlist) : base.allowlist;
-  const replacementMix = normalizeMix(raw.replacementMix);
-  return { masterEnabled, rules, allowlist, replacementMix };
+  return { masterEnabled, rules, allowlist };
 }
 
 function dedupeHosts(input: unknown[]): string[] {
@@ -89,15 +75,25 @@ export async function saveSettings(patch: Partial<Settings>): Promise<void> {
   await chrome.storage.local.set(patch);
 }
 
+/**
+ * US-001 install safety: only fill keys that are genuinely missing. A user (or
+ * the QA harness) can write settings while chrome.runtime.onInstalled is still
+ * running; those writes must never be clobbered by the defaults.
+ */
+export function missingDefaults(raw: Record<string, unknown>): Partial<Settings> {
+  const base = defaultSettings();
+  const patch: Partial<Settings> = {};
+  if (typeof raw.masterEnabled !== 'boolean') patch.masterEnabled = base.masterEnabled;
+  if (!Array.isArray(raw.rules)) patch.rules = base.rules;
+  if (!Array.isArray(raw.allowlist)) patch.allowlist = base.allowlist;
+  return patch;
+}
+
 /** Called on install: materializes defaults so the options page has rows. */
 export async function ensureDefaults(): Promise<Settings> {
   const raw = await chrome.storage.local.get([...SETTINGS_KEYS]);
-  const merged = mergeSettings(raw as Record<string, unknown>);
-  await chrome.storage.local.set({
-    masterEnabled: merged.masterEnabled,
-    rules: merged.rules,
-    allowlist: merged.allowlist,
-    replacementMix: merged.replacementMix,
-  });
-  return merged;
+  const loaded = raw as Record<string, unknown>;
+  const patch = missingDefaults(loaded);
+  if (Object.keys(patch).length > 0) await chrome.storage.local.set(patch);
+  return mergeSettings({ ...loaded, ...patch });
 }
