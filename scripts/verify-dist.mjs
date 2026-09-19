@@ -27,10 +27,21 @@ const required = [
   manifest.background?.service_worker,
   manifest.action?.default_popup,
   manifest.options_ui?.page,
+  ...Object.values(manifest.icons ?? {}),
+  ...Object.values(manifest.action?.default_icon ?? {}),
   ...(manifest.content_scripts ?? []).flatMap((script) => script.js ?? []),
 ];
 for (const file of required) {
   check(typeof file === 'string' && existsSync(join(dist, file)), `missing manifest file ${file}`);
+}
+
+for (const [size, file] of Object.entries(manifest.icons ?? {})) {
+  if (typeof file !== 'string' || !existsSync(join(dist, file))) continue;
+  const data = readFileSync(join(dist, file));
+  check(data.subarray(0, 8).toString('hex') === '89504e470d0a1a0a', `${file} is not a PNG`);
+  const width = data.readUInt32BE(16);
+  const height = data.readUInt32BE(20);
+  check(width === Number(size) && height === Number(size), `${file} is ${width}x${height}, expected ${size}x${size}`);
 }
 
 for (const page of [manifest.action?.default_popup, manifest.options_ui?.page]) {
@@ -52,20 +63,44 @@ for (const match of background.matchAll(/from\s*["']\.\/([^"']+)["']/g)) {
   check(existsSync(join(dist, match[1])), `background.js imports missing ${match[1]}`);
 }
 
-const faceDir = join(dist, 'assets', 'faces');
-const faces = existsSync(faceDir) ? readdirSync(faceDir) : [];
-check(faces.length > 0, 'assets/faces/ has no bundled faces');
-for (const file of faces) {
-  check(file.endsWith('.svg'), `${file} is not an SVG`);
-  check(readFileSync(join(faceDir, file), 'utf8').startsWith('<svg'), `${file} is not SVG markup`);
+const replacementsDir = join(dist, 'assets', 'replacements');
+const svgFiles = existsSync(replacementsDir)
+  ? readdirSync(replacementsDir).filter((file) => file.endsWith('.svg'))
+  : [];
+check(svgFiles.length >= 12, `assets/replacements/ has ${svgFiles.length} SVGs, expected at least 12`);
+for (const file of svgFiles) {
+  check(readFileSync(join(replacementsDir, file), 'utf8').startsWith('<svg'), `${file} is not SVG markup`);
 }
+
+const libraryManifestPath = join(replacementsDir, 'manifest.json');
+check(existsSync(libraryManifestPath), 'assets/replacements/manifest.json missing');
+if (existsSync(libraryManifestPath)) {
+  const library = JSON.parse(readFileSync(libraryManifestPath, 'utf8'));
+  check(Array.isArray(library.items) && library.items.length >= 12, 'library manifest has too few items');
+  for (const item of library.items ?? []) {
+    check(
+      typeof item.file === 'string' && existsSync(join(replacementsDir, item.file)),
+      `library item ${item.id} missing ${item.file}`,
+    );
+    check(typeof item.license === 'string' && item.license.length > 0, `library item ${item.id} has no license`);
+  }
+}
+check(
+  existsSync(join(replacementsDir, 'README.md')),
+  'assets/replacements/README.md (regeneration instructions) missing',
+);
+check(
+  existsSync(join(dist, 'assets', 'icons', 'polymorph.svg')),
+  'assets/icons/polymorph.svg source missing',
+);
+
 for (const resource of (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? [])) {
   if (!resource.includes('*')) continue;
-  const prefix = resource.slice(0, resource.indexOf('*'));
-  check(
-    faces.length > 0 && existsSync(join(dist, prefix.replace(/\/$/, ''))),
-    `web_accessible_resources ${resource} matches nothing`,
-  );
+  const prefix = resource.slice(0, resource.indexOf('*')).replace(/\/$/, '');
+  check(existsSync(join(dist, prefix)), `web_accessible_resources ${resource} matches nothing`);
+  if (prefix.endsWith('replacements')) {
+    check(svgFiles.length > 0, `web_accessible_resources ${resource} matches no SVGs`);
+  }
 }
 
 if (problems.length > 0) {
@@ -74,5 +109,5 @@ if (problems.length > 0) {
   process.exit(1);
 }
 console.log(
-  `dist verification passed: manifest, worker, content, popup, options, ${faces.length} bundled faces`,
+  `dist verification passed: manifest, worker, content, popup, options, ${svgFiles.length} replacements, icons 16/32/48/128`,
 );

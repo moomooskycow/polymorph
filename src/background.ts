@@ -1,35 +1,145 @@
+import { Backoff } from './backoff';
 import { MAX_INFLIGHT_JEV_CALLS } from './defaults';
+import {
+  DiagnosticRing,
+  type DiagnosticEvent,
+  type DiagnosticsSnapshot,
+  type ErrorKind,
+  type OutcomeKind,
+  type TabDiagnostics,
+} from './diagnostics';
 import { canRunOnHost, hostFromUrl, isDenylisted } from './hosts';
 import { DecisionCache, hashText } from './jev/cache';
-import { buildJevBody, parseAnswers, requestJev } from './jev/client';
+import { buildJevBody, isRetryableFailure, parseAnswers, requestJevDetailed } from './jev/client';
 import { clearKey, hasKey, loadKey, saveKey } from './jev/key';
 import { normalizeText, precheck } from './jev/precheck';
 import { Limiter } from './jev/queue';
-import { enabledRules, pickMatch, questionsForRules } from './policy';
+import { enabledRules, pickMatch, questionForRule, questionsForRules } from './policy';
 import { ensureDefaults, loadSettings } from './settings';
-import type { Decision, EngineState, Rule } from './types';
+import { emptyCounters, type Decision, type EngineState, type Rule, type TabCounters } from './types';
 
 /**
  * US-001: the service worker is the only process that reads the key or calls
- * OpenRouter. Page text only arrives here through `classify` messages from
- * our own content script, and the host is re-checked before any Jev call.
+ * OpenRouter. US-010: it also owns the provider backoff. US-011: it aggregates
+ * per-tab counters and the redacted outcome ring.
  */
 const cache = new DecisionCache();
 const limiter = new Limiter(MAX_INFLIGHT_JEV_CALLS);
 const inFlight = new Map<string, Promise<Decision>>();
-const collapsedByTab = new Map<number, number>();
+const backoff = new Backoff();
+const ring = new DiagnosticRing();
+const statsByTab = new Map<number, TabDiagnostics>();
+
+/**
+ * Session totals: counters that survive closing a tab, so the diagnostics
+ * page never shows zero counters above real outcome log lines. Persisted to
+ * chrome.storage.session; cleared when the browser closes, on Clear, and it
+ * tracks per-tab deltas so re-reports do not double count.
+ */
+const TOTALS_STORAGE = 'polymorph:totals:v1';
+interface TotalsState {
+  totals: TabCounters;
+  perTab: Record<string, TabCounters>;
+}
+let totalsState: TotalsState | null = null;
+let statsChain: Promise<void> = Promise.resolve();
+
+async function hydrateTotals(): Promise<TotalsState> {
+  if (totalsState !== null) return totalsState;
+  const state: TotalsState = { totals: emptyCounters(), perTab: {} };
+  try {
+    const raw = await chrome.storage.session.get(TOTALS_STORAGE);
+    const data = raw[TOTALS_STORAGE] as TotalsState | undefined;
+    if (data !== null && typeof data === 'object') {
+      const totals = data.totals as unknown as Record<string, unknown> | undefined;
+      if (totals !== null && typeof totals === 'object') {
+        for (const key of COUNTER_KEYS) {
+          const v = totals[key];
+          state.totals[key] = typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+        }
+      }
+      const perTab = data.perTab;
+      if (perTab !== null && typeof perTab === 'object') {
+        for (const [tabId, counters] of Object.entries(perTab)) {
+          const clean = emptyCounters();
+          const rawCounters = counters as unknown as Record<string, unknown>;
+          for (const key of COUNTER_KEYS) {
+            const v = rawCounters?.[key];
+            clean[key] = typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+          }
+          state.perTab[tabId] = clean;
+        }
+      }
+    }
+  } catch {
+    // Session storage unavailable; in-memory totals still work.
+  }
+  totalsState = state;
+  return state;
+}
+
+function persistTotals(): void {
+  if (totalsState === null) return;
+  void chrome.storage.session.set({ [TOTALS_STORAGE]: totalsState }).catch(() => {});
+}
+
+async function forgetTabTotals(tabId: number): Promise<void> {
+  const state = await hydrateTotals();
+  if (state.perTab[String(tabId)] !== undefined) {
+    delete state.perTab[String(tabId)];
+    persistTotals();
+  }
+}
+
+async function resetTotals(): Promise<void> {
+  const state = await hydrateTotals();
+  state.totals = emptyCounters();
+  state.perTab = {};
+  persistTotals();
+}
 const CACHE_STORAGE = 'decisionCache';
+const DIAGNOSTICS_STORAGE = 'diagnosticsRing';
+const TEST_TIMEOUT_MS = 10_000;
 let cacheHydrated = false;
+let diagnosticsHydrated = false;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 type Message =
   | { type: 'classify'; text: string }
   | { type: 'getState' }
-  | { type: 'getStats'; tabId?: number }
+  | { type: 'getTabStats'; tabId?: number }
   | { type: 'hasKey' }
   | { type: 'setKey'; key: string }
   | { type: 'clearKey' }
-  | { type: 'reportCollapse' }
-  | { type: 'reportRestore' };
+  | { type: 'testKey' }
+  | { type: 'reportStats'; stats: TabCounters }
+  | { type: 'reportEvent'; event: Partial<DiagnosticEvent> }
+  | { type: 'getDiagnostics' }
+  | { type: 'clearDiagnostics' };
+
+const COUNTER_KEYS: readonly (keyof TabCounters)[] = [
+  'discovered',
+  'queued',
+  'evaluated',
+  'transformed',
+  'skipped',
+  'errors',
+  'restored',
+];
+
+const OUTCOMES: readonly OutcomeKind[] = [
+  'queued',
+  'evaluated',
+  'transformed',
+  'left',
+  'skipped',
+  'restored',
+  'deferred',
+  'error',
+  'connection_test',
+];
+
+const ERROR_KINDS: readonly ErrorKind[] = ['http', 'network', 'timeout', 'parse', 'no_key'];
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureDefaults();
@@ -41,16 +151,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
     'masterEnabled' in changes ||
     'rules' in changes ||
     'allowlist' in changes ||
+    'replacementMix' in changes ||
     'openrouterKey' in changes;
   if (relevant) void notifyTabs();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  collapsedByTab.delete(tabId);
+  statsByTab.delete(tabId);
+  void forgetTabTotals(tabId);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === 'loading') collapsedByTab.delete(tabId);
+  if (changeInfo.status === 'loading') { statsByTab.delete(tabId); void forgetTabTotals(tabId); }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -84,9 +196,10 @@ async function handleMessage(
       return classify(message.text, sender);
     case 'getState':
       return engineState(sender);
-    case 'getStats': {
+    case 'getTabStats': {
       const tabId = message.tabId ?? sender.tab?.id;
-      return { collapsed: tabId === undefined ? 0 : (collapsedByTab.get(tabId) ?? 0) };
+      const entry = tabId === undefined ? undefined : statsByTab.get(tabId);
+      return { transformed: entry?.counters.transformed ?? 0, counters: entry?.counters ?? emptyCounters() };
     }
     case 'hasKey':
       return { hasKey: await hasKey() };
@@ -96,11 +209,25 @@ async function handleMessage(
     case 'clearKey':
       await clearKey();
       return { ok: true };
-    case 'reportCollapse':
-      bumpCollapsed(sender, 1);
+    case 'testKey':
+      return testConnection();
+    case 'reportStats':
+      statsChain = statsChain.then(() => reportStats(message.stats, sender));
       return { ok: true };
-    case 'reportRestore':
-      bumpCollapsed(sender, -1);
+    case 'reportEvent':
+      reportEvent(message.event, sender);
+      return { ok: true };
+    case 'getDiagnostics':
+      return diagnosticsSnapshot(sender);
+    case 'clearDiagnostics':
+      ring.clear();
+      statsByTab.clear();
+      void resetTotals();
+      if (persistTimer !== null) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+      void persistDiagnostics();
       return { ok: true };
     default:
       return { error: 'unknown message' };
@@ -119,6 +246,7 @@ async function engineState(sender: chrome.runtime.MessageSender): Promise<Engine
     denied,
     enabledRules: enabledRules(settings.rules).length,
     keyPresent,
+    replacementMix: settings.replacementMix,
   };
 }
 
@@ -130,6 +258,11 @@ async function classify(rawText: string, sender: chrome.runtime.MessageSender): 
 
   const stop = precheck({ host, settings, keyPresent: key.length > 0, text });
   if (stop !== null) return stop;
+
+  const now = Date.now();
+  if (backoff.isPaused(now)) {
+    return { verdict: 'leave', reason: 'backoff', retryAfterMs: backoff.retryAfterMs(now) };
+  }
 
   const rules = enabledRules(settings.rules);
 
@@ -162,9 +295,44 @@ async function decide(args: {
     text: args.text,
     questions: questionsForRules(args.rules),
   });
-  const payload = await requestJev({ apiKey: args.key, body });
-  const answers = payload === null ? null : parseAnswers(payload);
-  if (answers === null) return { verdict: 'leave', reason: 'jev_error' };
+  const startedAt = Date.now();
+  const result = await requestJevDetailed({ apiKey: args.key, body });
+  const durationMs = Date.now() - startedAt;
+
+  if (!result.ok) {
+    if (isRetryableFailure(result)) {
+      const retryAfterMs = backoff.noteFailure();
+      recordEvent({
+        host: args.host,
+        outcome: 'error',
+        errorKind: result.kind,
+        durationMs,
+        textLength: args.text.length,
+      });
+      return { verdict: 'leave', reason: 'backoff', retryAfterMs };
+    }
+    recordEvent({
+      host: args.host,
+      outcome: 'error',
+      errorKind: result.kind,
+      durationMs,
+      textLength: args.text.length,
+    });
+    return { verdict: 'leave', reason: 'jev_error' };
+  }
+
+  backoff.noteSuccess();
+  const answers = parseAnswers(result.payload);
+  if (answers === null) {
+    recordEvent({
+      host: args.host,
+      outcome: 'error',
+      errorKind: 'parse',
+      durationMs,
+      textLength: args.text.length,
+    });
+    return { verdict: 'leave', reason: 'jev_error' };
+  }
 
   const match = pickMatch(answers, args.rules);
   const decision: Decision =
@@ -183,10 +351,123 @@ async function decide(args: {
   return decision;
 }
 
-function bumpCollapsed(sender: chrome.runtime.MessageSender, delta: number): void {
+/** US-005 in options: one bounded real call with fixed synthetic text. */
+async function testConnection(): Promise<{
+  ok: boolean;
+  ms: number;
+  errorKind?: ErrorKind;
+  status?: number;
+}> {
+  const key = await loadKey();
+  if (key.length === 0) return { ok: false, ms: 0, errorKind: 'no_key' };
+
+  const rule: Rule = {
+    id: 'connection-test',
+    name: 'Connection test',
+    instructions:
+      'Fixed synthetic test. Match if the text mentions Polymorph; otherwise no_match.',
+    enabled: true,
+    face: 'inherit',
+  };
+  const body = buildJevBody({
+    host: 'polymorph.local',
+    text: 'Polymorph connection test. This is fixed synthetic text and contains no page content.',
+    questions: { 'connection-test': questionForRule(rule) },
+  });
+  const startedAt = Date.now();
+  const result = await requestJevDetailed({ apiKey: key, body, timeoutMs: TEST_TIMEOUT_MS });
+  const ms = Date.now() - startedAt;
+  if (!result.ok) {
+    recordEvent({ host: 'connection-test', outcome: 'connection_test', errorKind: result.kind, durationMs: ms });
+    return { ok: false, ms, ...(result.status === undefined ? {} : { status: result.status }), errorKind: result.kind };
+  }
+  backoff.noteSuccess();
+  recordEvent({ host: 'connection-test', outcome: 'connection_test', durationMs: ms });
+  return { ok: true, ms };
+}
+
+async function reportStats(raw: TabCounters, sender: chrome.runtime.MessageSender): Promise<void> {
   const tabId = sender.tab?.id;
-  if (tabId === undefined) return;
-  collapsedByTab.set(tabId, Math.max(0, (collapsedByTab.get(tabId) ?? 0) + delta));
+  if (tabId === undefined || raw === null || typeof raw !== 'object') return;
+  const counters = emptyCounters();
+  for (const key of COUNTER_KEYS) {
+    const value = raw[key];
+    counters[key] = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  }
+  statsByTab.set(tabId, {
+    tabId,
+    host: hostFromUrl(sender.tab?.url ?? sender.url),
+    counters,
+    lastAt: Date.now(),
+  });
+  const state = await hydrateTotals();
+  const prev = state.perTab[String(tabId)] ?? emptyCounters();
+  for (const key of COUNTER_KEYS) {
+    const delta = counters[key] - prev[key];
+    if (delta > 0) state.totals[key] += delta;
+  }
+  state.perTab[String(tabId)] = counters;
+  persistTotals();
+}
+
+function reportEvent(raw: Partial<DiagnosticEvent>, sender: chrome.runtime.MessageSender): void {
+  if (raw === null || typeof raw !== 'object') return;
+  const outcome = OUTCOMES.includes(raw.outcome as OutcomeKind) ? (raw.outcome as OutcomeKind) : null;
+  if (outcome === null) return;
+  const errorKind =
+    raw.errorKind !== undefined && ERROR_KINDS.includes(raw.errorKind) ? raw.errorKind : undefined;
+  recordEvent({
+    host: hostFromUrl(sender.tab?.url ?? sender.url),
+    outcome,
+    ...(typeof raw.ruleId === 'string' ? { ruleId: raw.ruleId.slice(0, 80) } : {}),
+    ...(typeof raw.assetId === 'string' ? { assetId: raw.assetId.slice(0, 80) } : {}),
+    ...(typeof raw.durationMs === 'number' && Number.isFinite(raw.durationMs)
+      ? { durationMs: Math.max(0, Math.round(raw.durationMs)) }
+      : {}),
+    ...(typeof raw.textLength === 'number' && Number.isFinite(raw.textLength)
+      ? { textLength: Math.max(0, Math.floor(raw.textLength)) }
+      : {}),
+    ...(errorKind === undefined ? {} : { errorKind }),
+  });
+}
+
+function recordEvent(event: Omit<DiagnosticEvent, 'at'>): void {
+  ring.push({ ...event, at: Date.now() });
+  schedulePersist();
+}
+
+/** Diagnostics writes are debounced; a busy feed must not spam session storage. */
+function schedulePersist(): void {
+  if (persistTimer !== null) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    void persistDiagnostics();
+  }, 1_000);
+}
+
+async function diagnosticsSnapshot(sender: chrome.runtime.MessageSender): Promise<DiagnosticsSnapshot> {
+  await hydrateDiagnostics();
+  const host = hostFromUrl(sender.tab?.url ?? sender.url);
+  const settings = await loadSettings();
+  const keyPresent = await hasKey();
+  const totals = (await hydrateTotals()).totals;
+  const now = Date.now();
+  return {
+    version: chrome.runtime.getManifest().version,
+    generatedAt: now,
+    paused: backoff.isPaused(now),
+    pausedForMs: backoff.retryAfterMs(now),
+    activeRules: enabledRules(settings.rules).map((rule) => rule.name),
+    totals,
+    currentSite: {
+      host,
+      allowed: !isDenylisted(host) && canRunOnHost(host, settings) && keyPresent,
+      denied: isDenylisted(host),
+      masterEnabled: settings.masterEnabled,
+    },
+    tabs: [...statsByTab.values()],
+    recent: ring.list(),
+  };
 }
 
 /** US-006: the cache outlives a suspended worker via chrome.storage.session. */
@@ -209,5 +490,25 @@ async function persistCache(): Promise<void> {
     await chrome.storage.session.set({ [CACHE_STORAGE]: cache.snapshot() });
   } catch {
     // Non-fatal: the in-memory cache is authoritative for this worker.
+  }
+}
+
+async function hydrateDiagnostics(): Promise<void> {
+  if (diagnosticsHydrated) return;
+  diagnosticsHydrated = true;
+  try {
+    const raw = await chrome.storage.session.get(DIAGNOSTICS_STORAGE);
+    const data = raw[DIAGNOSTICS_STORAGE];
+    if (Array.isArray(data)) ring.restore(data as DiagnosticEvent[]);
+  } catch {
+    // Session storage unavailable; diagnostics stay in memory.
+  }
+}
+
+async function persistDiagnostics(): Promise<void> {
+  try {
+    await chrome.storage.session.set({ [DIAGNOSTICS_STORAGE]: ring.list() });
+  } catch {
+    // Non-fatal.
   }
 }

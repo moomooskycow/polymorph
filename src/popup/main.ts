@@ -1,5 +1,6 @@
-import { canRunOnHost, hostFromUrl, isDenylisted, toggleHost } from '../hosts';
+import { canRunOnHost, hostFromUrl, isAllowlisted, isDenylisted, toggleHost } from '../hosts';
 import { loadSettings, saveSettings } from '../settings';
+import { el, row, switchControl } from '../ui/dom';
 
 function requireApp(): HTMLElement {
   const node = document.getElementById('app');
@@ -17,21 +18,30 @@ async function send<T>(message: unknown): Promise<T | null> {
   }
 }
 
-function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className !== undefined) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
+interface Readiness {
+  tone: 'ok' | 'warn' | 'off' | 'deny';
+  text: string;
 }
 
-function row(left: Node, right: Node): HTMLDivElement {
-  const div = el('div', 'row');
-  div.append(left, right);
-  return div;
+/** US-007: one-line readiness statement first, in plain language. */
+function readiness(args: {
+  keyPresent: boolean;
+  denied: boolean;
+  host: string;
+  masterEnabled: boolean;
+  allowed: boolean;
+  enabledRules: number;
+}): Readiness {
+  if (!args.keyPresent) return { tone: 'warn', text: 'Not set up — add your key' };
+  if (args.denied) return { tone: 'deny', text: 'Never runs on this site' };
+  if (!args.masterEnabled) return { tone: 'off', text: 'Paused everywhere' };
+  if (args.host === '') return { tone: 'off', text: 'Nothing to do on this page' };
+  if (!args.allowed) return { tone: 'off', text: 'Paused on this site' };
+  if (args.enabledRules === 0) return { tone: 'warn', text: 'No rules enabled yet' };
+  return {
+    tone: 'ok',
+    text: `Working here — ${args.enabledRules} rule${args.enabledRules === 1 ? '' : 's'} active`,
+  };
 }
 
 async function render(): Promise<void> {
@@ -39,58 +49,87 @@ async function render(): Promise<void> {
   const host = tab?.url ? hostFromUrl(tab.url) : '';
   const settings = await loadSettings();
   const keyState = (await send<{ hasKey: boolean }>({ type: 'hasKey' })) ?? { hasKey: false };
-  const stats = (await send<{ collapsed: number }>({ type: 'getStats', tabId: tab?.id })) ?? {
-    collapsed: 0,
+  const stats = (await send<{ transformed: number }>({ type: 'getTabStats', tabId: tab?.id })) ?? {
+    transformed: 0,
   };
+  const enabledRules = settings.rules.filter((rule) => rule.enabled).length;
+  const denied = host !== '' && isDenylisted(host);
+  const allowed = host !== '' && canRunOnHost(host, settings);
+  const ready = readiness({
+    keyPresent: keyState.hasKey,
+    denied,
+    host,
+    masterEnabled: settings.masterEnabled,
+    allowed,
+    enabledRules,
+  });
 
   app.replaceChildren();
   app.append(el('h1', undefined, 'Polymorph'));
 
-  const keyRow = row(
-    el('span', undefined, 'OpenRouter key'),
-    el('span', keyState.hasKey ? 'muted' : 'danger', keyState.hasKey ? 'Saved' : 'Missing'),
+  const banner = el('p', `banner banner--${ready.tone}`, ready.text);
+  banner.setAttribute('role', 'status');
+  app.append(banner);
+
+  app.append(
+    row(
+      el('span', undefined, 'Rules active'),
+      el('span', 'muted', `${enabledRules} of ${settings.rules.length}`),
+    ),
   );
-  app.append(keyRow);
-  if (!keyState.hasKey) {
-    const setKey = el('button', 'primary', 'Set key in Options');
-    setKey.addEventListener('click', () => chrome.runtime.openOptionsPage());
-    app.append(setKey);
-  }
+  app.append(
+    row(
+      el('span', undefined, 'Posts transformed here'),
+      el('span', 'muted', String(stats.transformed)),
+    ),
+  );
 
-  // US-005.4: master enable.
-  const master = el('input');
-  master.type = 'checkbox';
-  master.checked = settings.masterEnabled;
-  master.addEventListener('change', () => {
-    void saveSettings({ masterEnabled: master.checked }).then(render);
-  });
-  const masterLabel = el('label');
-  masterLabel.append(master, el('span', undefined, 'Enabled'));
-  app.append(masterLabel);
+  app.append(
+    row(
+      el('span', undefined, 'Polymorph enabled'),
+      switchControl({
+        label: 'Polymorph enabled',
+        checked: settings.masterEnabled,
+        showLabel: false,
+        onChange: (checked) => {
+          void saveSettings({ masterEnabled: checked }).then(render);
+        },
+      }),
+    ),
+  );
 
-  // US-005.2/.3 plus US-004.3: no unlock control on a denylisted host.
-  const hostRow = el('div', 'row');
-  hostRow.append(el('span', 'host', host || 'No host on this page'));
   if (host === '') {
-    hostRow.append(el('span', 'muted', '—'));
-  } else if (isDenylisted(host)) {
-    hostRow.append(el('span', 'danger', 'Never runs here'));
+    app.append(row(el('span', 'host', 'No site on this page'), el('span', 'muted', '—')));
+  } else if (denied) {
+    app.append(row(el('span', 'host', host), el('span', 'danger', 'Never runs here')));
   } else {
-    const allowed = canRunOnHost(host, settings);
-    const toggle = el('button', undefined, allowed ? 'On' : 'Off');
-    toggle.setAttribute('aria-pressed', String(allowed));
-    toggle.addEventListener('click', () => {
-      void saveSettings({ allowlist: toggleHost(settings.allowlist, host) }).then(render);
-    });
-    hostRow.append(toggle);
+    const hostListed = isAllowlisted(host, settings.allowlist);
+    app.append(
+      row(
+        el('span', 'host', host),
+        switchControl({
+          label: `Run on ${host}`,
+          checked: hostListed,
+          showLabel: false,
+          onChange: () => {
+            void saveSettings({ allowlist: toggleHost(settings.allowlist, host) }).then(render);
+          },
+        }),
+      ),
+    );
   }
-  app.append(hostRow);
 
-  app.append(row(el('span', undefined, 'Collapsed on this tab'), el('span', 'muted', String(stats.collapsed))));
-
-  const options = el('button', 'link-button', 'Options');
+  const options = el('button', 'primary', 'Options');
   options.addEventListener('click', () => chrome.runtime.openOptionsPage());
-  app.append(options);
+  const diagnostics = el('button', undefined, 'Diagnostics');
+  diagnostics.addEventListener('click', () => {
+    void chrome.tabs.create({ url: chrome.runtime.getURL('options.html#diagnostics') });
+  });
+  const actions = el('div', 'toolbar');
+  actions.append(options, diagnostics);
+  app.append(actions);
+
+  app.append(el('p', 'muted version', `v${chrome.runtime.getManifest().version}`));
 }
 
 chrome.storage.onChanged.addListener((_changes, area) => {

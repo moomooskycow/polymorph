@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="motivational line">
+  <title>Rest is part of the work</title>
+  <rect x="4" y="4" width="152" height="112" rx="14" fill="#e9eef5" stroke="#3f5f8a" stroke-width="2" />
+  <path d="M112 26 A34 34 0 1 0 118 66 A28 28 0 1 1 112 26 Z" fill="#f7d774" stroke="#3f5f8a" stroke-width="2" stroke-linejoin="round" />
+  <circle cx="36" cy="28" r="3" fill="#3f5f8a" />
+  <circle cx="52" cy="20" r="2" fill="#3f5f8a" />
+  <circle cx="28" cy="44" r="2" fill="#3f5f8a" />
+  <text x="56" y="58" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700" fill="#2b4368">Rest is part</text>
+  <text x="56" y="78" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700" fill="#2b4368">of the work.</text>
+</svg>

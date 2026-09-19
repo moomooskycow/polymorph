@@ -85,16 +85,42 @@ export interface RequestJevOptions {
 export const JEV_REFERER = 'https://github.com/moomooskycow/polymorph';
 export const JEV_TITLE = 'Polymorph';
 
+export type JevErrorKind = 'http' | 'network' | 'timeout' | 'parse';
+
+export type JevResult =
+  | { ok: true; payload: unknown }
+  | { ok: false; kind: JevErrorKind; status?: number };
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TimeoutError';
+}
+
 /**
- * US-006: any network error, timeout, non-OK status, or bad JSON resolves to
- * null. Callers leave the post visible; there is no retry loop here.
+ * QA/self-host hook: honors a storage.local override for the Jev endpoint.
+ * Inert in production unless someone explicitly sets `jevEndpointOverride`.
  */
-export async function requestJev(options: RequestJevOptions): Promise<unknown | null> {
+export async function resolveEndpoint(): Promise<string> {
+  try {
+    const raw = await chrome.storage.local.get('jevEndpointOverride');
+    const override = raw['jevEndpointOverride'];
+    if (typeof override === 'string' && override.startsWith('https://')) return override;
+  } catch {
+    // No extension storage (pure unit tests); use the default endpoint.
+  }
+  return JEV_ENDPOINT;
+}
+
+/**
+ * US-006/US-010: detailed result so the caller can distinguish timeouts and
+ * 429/5xx (backoff) from a bad payload (no backoff). Any failure is fail-open.
+ */
+export async function requestJevDetailed(options: RequestJevOptions): Promise<JevResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const endpoint = await resolveEndpoint();
   const signals = [timeoutSignal(options.timeoutMs ?? JEV_TIMEOUT_MS)];
   if (options.signal) signals.push(options.signal);
   try {
-    const response = await fetchImpl(JEV_ENDPOINT, {
+    const response = await fetchImpl(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${options.apiKey}`,
@@ -105,9 +131,32 @@ export async function requestJev(options: RequestJevOptions): Promise<unknown | 
       body: options.body,
       signal: combineSignals(signals),
     });
-    if (!response.ok) return null;
-    return (await response.json()) as unknown;
-  } catch {
-    return null;
+    if (!response.ok) return { ok: false, kind: 'http', status: response.status };
+    try {
+      return { ok: true, payload: (await response.json()) as unknown };
+    } catch {
+      return { ok: false, kind: 'parse' };
+    }
+  } catch (error) {
+    return { ok: false, kind: isTimeoutError(error) ? 'timeout' : 'network' };
   }
+}
+
+/** True for failures worth pausing new calls for: 429, 5xx, timeout, network. */
+export function isRetryableFailure(failure: { kind: JevErrorKind; status?: number }): boolean {
+  if (failure.kind === 'timeout' || failure.kind === 'network') return true;
+  if (failure.kind === 'http') {
+    const status = failure.status ?? 0;
+    return status === 429 || status >= 500;
+  }
+  return false;
+}
+
+/**
+ * US-006: any network error, timeout, non-OK status, or bad JSON resolves to
+ * null. Callers leave the post visible; there is no retry loop here.
+ */
+export async function requestJev(options: RequestJevOptions): Promise<unknown | null> {
+  const result = await requestJevDetailed(options);
+  return result.ok ? result.payload : null;
 }

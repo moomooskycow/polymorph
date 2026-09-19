@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="duck">
+  <title>Polymorph duck, still</title>
+  <path d="M18 96 Q52 86 90 96 Q128 106 146 96" stroke="#7fb3d5" stroke-width="6" fill="none" stroke-linecap="round" />
+  <path d="M28 106 Q60 98 96 106 Q126 114 140 106" stroke="#a9cce3" stroke-width="4" fill="none" stroke-linecap="round" />
+  <ellipse cx="86" cy="80" rx="34" ry="20" fill="#f2d26b" />
+  <circle cx="52" cy="54" r="20" fill="#f7e08f" />
+  <path d="M34 50 Q22 52 20 58 Q24 64 36 62 Z" fill="#e8923f" />
+  <circle cx="48" cy="49" r="3.4" fill="#2c2620" />
+  <circle cx="49" cy="48" r="1" fill="#ffffff" />
+  <path d="M60 78 Q54 68 62 62" stroke="#e3bb4f" stroke-width="3" fill="none" stroke-linecap="round" />
+  <path d="M108 70 Q122 64 130 54" stroke="#e3bb4f" stroke-width="4" fill="none" stroke-linecap="round" />
+</svg>

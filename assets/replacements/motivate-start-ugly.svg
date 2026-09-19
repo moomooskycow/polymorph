@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="motivational line">
+  <title>Start ugly, improve later</title>
+  <rect x="4" y="4" width="152" height="112" rx="14" fill="#fbeee7" stroke="#b3553f" stroke-width="2" />
+  <path d="M28 96 L44 66 L58 84 L78 50 L96 78 L118 42 L136 92" stroke="#b3553f" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="136" cy="42" r="5" fill="#e8a25c" stroke="#b3553f" stroke-width="2" />
+  <text x="80" y="34" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#8c3f2e">Start ugly.</text>
+  <text x="80" y="110" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#8c3f2e">Improve later.</text>
+</svg>

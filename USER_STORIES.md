@@ -115,3 +115,141 @@ Criteria:
 No-gos: no fail-closed hiding, no dumping a whole feed into one Jev state.
 
 Evidence: `src/jev/gate.test.ts`, `src/jev/cache.ts`
+
+## US-007 Rule enablement is discoverable
+
+Statement: When I open options for the first time, I want to see why nothing is
+filtered and turn a rule on with an explicit switch, so I do not conclude the
+extension is broken.
+
+Criteria:
+1. WHEN no key is saved or no rule is active, THE SYSTEM SHALL show a first-run
+   block with three numbered steps: add the key, enable a rule, open a
+   supported site.
+2. WHEN a rule is displayed, THE SYSTEM SHALL show an "Enable rule" switch with
+   visible text and an Active/Off chip, not a bare checkbox.
+3. THE SYSTEM SHALL show "N of M rules active" on options and a matching
+   one-line readiness banner in the popup.
+4. WHEN rules are saved, THE SYSTEM SHALL not enable any rule the operator did
+   not switch on.
+
+No-gos: no auto-enabling the examples, no hidden enable control.
+
+Evidence: `src/options/main.ts`, `src/popup/main.ts`, `src/settings.test.ts`
+
+## US-008 Transform a matching post into a replacement card
+
+Statement: When a post matches a rule, I want it turned into something welcome
+with one click back, so filtering feels like transformation, not erasure.
+
+Criteria:
+1. WHEN a match passes the gate, THE SYSTEM SHALL replace the post with a
+   bounded card (max-width 480px, art area at most 120px) that names the rule,
+   shows an accessible caption, and keeps a keyboard-focusable "Show original"
+   control with a visible focus ring.
+2. WHERE the resolved mix is `collapse`, THE SYSTEM SHALL render a one-line
+   card with no art and the same restore control.
+3. WHERE a rule's face is a category, THE SYSTEM SHALL use that mix for that
+   rule only; `inherit` SHALL use the global mix.
+4. WHEN the mix changes while a page is open, THE SYSTEM SHALL redraw existing
+   cards without another Jev call.
+5. WHEN "Show original" is activated, THE SYSTEM SHALL restore the post and
+   SHALL not transform that same content again until reload.
+6. THE SYSTEM SHALL bundle 12-16 original assets with at least four per
+   category, each with caption, author, license, and created date in
+   `assets/replacements/manifest.json`.
+
+No-gos: no deletion, no remote art, no scraped copyrighted memes, no invented
+quote attributions.
+
+Evidence: `src/card.test.ts`, `src/replacements/library.test.ts`,
+`src/replacements/selection.test.ts`
+
+## US-009 Stable, non-repeating replacement selection with reduced motion
+
+Statement: When a post re-renders, I want the same replacement to stay, and
+when I prefer reduced motion I want still art, so the feed does not flicker or
+move.
+
+Criteria:
+1. WHEN the same normalized text and rule are evaluated again, THE SYSTEM SHALL
+   choose the identical asset.
+2. THE SYSTEM SHALL avoid the last 8 picks on a page when an alternative
+   exists.
+3. WHEN `prefers-reduced-motion: reduce` matches, THE SYSTEM SHALL substitute
+   an animated asset's declared static fallback and freeze animations on the
+   card.
+4. WHEN the media query changes at runtime, THE SYSTEM SHALL update mounted
+   cards without a reload.
+
+No-gos: no random per-render picks, no animation without a static path.
+
+Evidence: `src/replacements/selection.test.ts`, `src/card.test.ts`
+
+## US-010 Dynamic feeds stay correct
+
+Statement: When a feed recycles DOM nodes or loads more on scroll, I want only
+new or changed posts judged and stale cards cleared, so infinite scroll does
+not break.
+
+Criteria:
+1. THE SYSTEM SHALL mark posts with a state plus a signature of normalized
+   visible text; identical text SHALL skip re-evaluation.
+2. WHEN a transformed node's text changes, THE SYSTEM SHALL remove the card,
+   restore the post, and re-evaluate the new content.
+3. THE SYSTEM SHALL scan changed subtrees incrementally on mutation instead of
+   querying the whole document per mutation.
+4. WHEN settings disable or pause the engine, THE SYSTEM SHALL stop scanning
+   and restore every transformed post (fail-open).
+5. WHEN the provider fails with 429, 5xx, timeout, or network error, THE SYSTEM
+   SHALL pause new calls with growing backoff and re-check deferred posts after
+   the pause.
+6. THE SYSTEM SHALL cap in-flight Jev calls at 4 and SHALL not re-queue its own
+   cards in a mutation loop.
+
+No-gos: no permanent mark that ignores changed content, no full-document scan
+per mutation.
+
+Evidence: `src/marking.test.ts`, `src/backoff.test.ts`,
+`src/adapters/adapters.test.ts`
+
+## US-011 Privacy-safe diagnostics
+
+Statement: When something looks off, I want counts and outcomes I can copy, so
+I can tell whether the extension is working without leaking page text.
+
+Criteria:
+1. THE SYSTEM SHALL report per-tab counters
+   discovered/queued/evaluated/transformed/skipped/errors/restored and keep a
+   ring buffer capped at 100 outcomes in session storage.
+2. THE SYSTEM SHALL store outcomes with host, rule, asset, duration, error
+   kind, and character count only; it SHALL NOT store post text or the key.
+3. WHEN there has been no activity, THE SYSTEM SHALL say so and SHALL not
+   imply that quiet means healthy.
+4. THE SYSTEM SHALL offer Clear and Copy diagnostics; the copied text SHALL
+   contain no post text and no key.
+5. THE SYSTEM SHALL be reachable from both the popup and the options page.
+
+No-gos: no post text in the ring, no key in diagnostics.
+
+Evidence: `src/diagnostics.test.ts`, `src/background.ts`, `src/options/main.ts`
+
+## US-012 First-run setup and connection test
+
+Statement: When I open options after installing, I want a short path to a
+working setup and a way to verify my key, so I know the engine is wired up.
+
+Criteria:
+1. WHEN no key is saved or no rule is enabled, THE SYSTEM SHALL show the
+   three-step setup block; once both are true, THE SYSTEM SHALL hide it.
+2. WHEN "Test connection" is pressed, THE SYSTEM SHALL make exactly one
+   bounded Jev call with fixed synthetic text and report ok or fail with
+   elapsed milliseconds.
+3. THE SYSTEM SHALL not print, log, or store the key outside
+   `chrome.storage.local`; options SHALL read only a saved/missing boolean.
+4. WHEN no key is saved, "Test connection" SHALL report `no_key` without a
+   network call.
+
+No-gos: no key echo, no automatic repeated test calls.
+
+Evidence: `src/options/main.ts`, `src/background.ts`, `src/jev/key.ts`

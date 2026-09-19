@@ -17,7 +17,7 @@ describe('US-006 session cache', () => {
       verdict: 'collapse',
       ruleId: 'rage-bait',
       ruleName: 'Rage bait',
-      face: 'kitten',
+      face: 'cute',
       probability: 0.95,
       confidence: 0.9,
     } as const;

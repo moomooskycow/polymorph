@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ADAPTERS, adapterForHost, collectPosts, visibleText } from './index';
+import { ADAPTERS, adapterForHost, closestPost, collectPosts, collectPostsIn, visibleText } from './index';
 
 const LONG = 'This fixture post body is comfortably longer than forty visible characters.';
 
@@ -108,5 +108,36 @@ describe('US-002 adapters own what a post is', () => {
     expect(collectPosts(root, ADAPTERS.generic)).toHaveLength(0);
     expect(collectPosts(render(`<article>${'x'.repeat(39)}</article>`), ADAPTERS.generic)).toHaveLength(0);
     expect(collectPosts(render(`<article>${'x'.repeat(40)}</article>`), ADAPTERS.generic)).toHaveLength(1);
+  });
+});
+describe('US-010 incremental adapter helpers', () => {
+  it('US-010 closestPost finds the post ancestor of a mutated child', () => {
+    const root = render(`
+      <article data-testid="tweet" id="outer">${LONG}
+        <div id="inner"><span id="leaf">changed text</span></div>
+      </article>
+    `);
+    const leaf = root.querySelector('#leaf');
+    expect(leaf).not.toBeNull();
+    expect(closestPost(leaf!, ADAPTERS.x)?.id).toBe('outer');
+    expect(closestPost(root.querySelector('#inner')!, ADAPTERS.x)?.id).toBe('outer');
+    expect(closestPost(document.body, ADAPTERS.x)).toBeNull();
+  });
+
+  it('US-010 collectPostsIn sees the root itself when it is a post', () => {
+    document.body.innerHTML = `<article id="solo">${LONG}</article>`;
+    const post = document.getElementById('solo');
+    expect(post).not.toBeNull();
+    expect(collectPostsIn(post!, ADAPTERS.generic).map((item) => item.id)).toEqual(['solo']);
+  });
+
+  it('US-010 collectPostsIn finds posts inside an added subtree', () => {
+    const holder = document.createElement('div');
+    holder.innerHTML = `
+      <article id="a">${LONG}</article>
+      <article id="b">${LONG} two</article>
+      <article id="short">nope</article>
+    `;
+    expect(collectPostsIn(holder, ADAPTERS.generic).map((item) => item.id)).toEqual(['a', 'b']);
   });
 });

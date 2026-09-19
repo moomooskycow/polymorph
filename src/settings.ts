@@ -1,19 +1,36 @@
-import { DEFAULT_ALLOWLIST, EXAMPLE_RULES } from './defaults';
+import { DEFAULT_ALLOWLIST, DEFAULT_REPLACEMENT_MIX, EXAMPLE_RULES } from './defaults';
 import { normalizeHost } from './hosts';
-import type { Face, Rule, Settings } from './types';
+import type { Face, ReplacementMix, Rule, Settings } from './types';
 
-const FACES: readonly Face[] = ['collapse', 'kitten', 'meme'];
+const FACES: readonly Face[] = ['inherit', 'collapse', 'cute', 'meme', 'motivation'];
+const MIXES: readonly ReplacementMix[] = ['mixed', 'collapse', 'cute', 'meme', 'motivation'];
+
+/** US-007: v1 stored rules keep working. `kitten` becomes `cute`. */
+const LEGACY_FACES: Record<string, Face> = { kitten: 'cute' };
+
 const RULE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** Non-secret settings shape. The OpenRouter key lives in `src/jev/key.ts`. */
-export const SETTINGS_KEYS = ['masterEnabled', 'rules', 'allowlist'] as const;
+export const SETTINGS_KEYS = ['masterEnabled', 'rules', 'allowlist', 'replacementMix'] as const;
 
 export function defaultSettings(): Settings {
   return {
     masterEnabled: true,
     rules: EXAMPLE_RULES.map((rule) => ({ ...rule })),
     allowlist: [...DEFAULT_ALLOWLIST],
+    replacementMix: DEFAULT_REPLACEMENT_MIX,
   };
+}
+
+/** Face values arrive from storage untyped; normalize without enabling anything. */
+export function normalizeFace(raw: unknown): Face {
+  if (typeof raw !== 'string') return 'inherit';
+  if (raw in LEGACY_FACES) return LEGACY_FACES[raw] as Face;
+  return FACES.includes(raw as Face) ? (raw as Face) : 'inherit';
+}
+
+export function normalizeMix(raw: unknown): ReplacementMix {
+  return MIXES.includes(raw as ReplacementMix) ? (raw as ReplacementMix) : DEFAULT_REPLACEMENT_MIX;
 }
 
 /** Drops anything that is not a well-formed rule; ids must be unique slugs. */
@@ -35,7 +52,7 @@ export function sanitizeRules(input: unknown): Rule[] {
       name,
       instructions,
       enabled: candidate.enabled === true,
-      face: FACES.includes(candidate.face as Face) ? (candidate.face as Face) : 'collapse',
+      face: normalizeFace(candidate.face),
     });
   }
   return rules;
@@ -47,10 +64,9 @@ export function mergeSettings(raw: Record<string, unknown>): Settings {
   const masterEnabled =
     typeof raw.masterEnabled === 'boolean' ? raw.masterEnabled : base.masterEnabled;
   const rules = Array.isArray(raw.rules) ? sanitizeRules(raw.rules) : base.rules;
-  const allowlist = Array.isArray(raw.allowlist)
-    ? dedupeHosts(raw.allowlist)
-    : base.allowlist;
-  return { masterEnabled, rules, allowlist };
+  const allowlist = Array.isArray(raw.allowlist) ? dedupeHosts(raw.allowlist) : base.allowlist;
+  const replacementMix = normalizeMix(raw.replacementMix);
+  return { masterEnabled, rules, allowlist, replacementMix };
 }
 
 function dedupeHosts(input: unknown[]): string[] {
@@ -81,6 +97,7 @@ export async function ensureDefaults(): Promise<Settings> {
     masterEnabled: merged.masterEnabled,
     rules: merged.rules,
     allowlist: merged.allowlist,
+    replacementMix: merged.replacementMix,
   });
   return merged;
 }

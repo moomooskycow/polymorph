@@ -62,3 +62,38 @@ No author ids, no HTML, no cookies. `HTTP-Referer` / `X-Title`: Polymorph.
 `pnpm test` must cover hosts, gate, policy, cache, collapse markup, faces.
 Do not claim X/Reddit DOM behavior verified without a fixture. Load unpacked
 from `dist/` as documented in README.
+
+## v2 addendum (2026-09-19, US-007..US-012)
+
+The locked decisions above still hold. These notes record where v2 changes
+mechanics, not intent.
+
+- **US-002 action, restated.** A gate-passing match is now a replacement card
+  (US-008). The old one-line bar is the `collapse` mix inside that card:
+  same restore control, no art. Deletion was never allowed and still is not.
+- **Marking** is `data-polymorph-state` + `data-polymorph-sig` (FNV-1a of
+  normalized text). Same text skips re-evaluation; a transformed node whose
+  text changes is restored and re-judged. The v1 `data-polymorph` attribute is
+  cleared on sight.
+- **Scans** are incremental: MutationObserver records flush per changed
+  subtree via `closestPost`/`collectPostsIn`; full scans happen only on start,
+  re-enable, deferred retry, and host change. `characterData` is observed so
+  in-place text edits count as recycled content.
+- **Settings changes** re-check state; pause/disable/master-off restore every
+  transformed post and clear marks so re-enabling re-evaluates. A mix change
+  redraws cards without another Jev call.
+- **Backoff**: retryable Jev failures (429, 5xx, timeout, network) pause new
+  calls for 5s, doubling to 60s, reset on success. Posts in the pause window
+  are marked `deferred` and re-checked once when the pause ends.
+- **Replacement mix**: global `replacementMix` plus per-rule face; stored v1
+  `kitten` normalizes to `cute` and missing faces to `inherit`. Assets live in
+  `assets/replacements/` with `manifest.json`; raw SVG text is inlined, never
+  fetched. Recomputation of state for selection is pure (`selection.ts`).
+- **Diagnostics**: per-tab counters reported by content, aggregated in the
+  worker; a 100-entry ring in `chrome.storage.session` holds structured
+  outcomes only (no text, no key). `formatDiagnostics` is the redacted copy.
+- **Icons**: `assets/icons/polymorph.svg` renders to `public/icons/icon-*.png`
+  via `scripts/build-icons.mjs` (rsvg-convert, fail-closed), wired into
+  `pnpm build`; manifest icons and page favicons use those PNGs.
+- No new permissions, no new runtime dependencies, key storage and the hard
+  denylist are unchanged.

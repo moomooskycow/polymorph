@@ -57,12 +57,31 @@ function pruneNested(nodes: HTMLElement[]): HTMLElement[] {
   return nodes.filter((node) => !nodes.some((other) => other !== node && other.contains(node)));
 }
 
+export function isPostElement(el: Element, adapter: Adapter): boolean {
+  return adapter.selectors.some((selector) => el.matches(selector));
+}
+
+function isEligiblePost(el: Element, adapter: Adapter): boolean {
+  return !isSkipped(el, adapter) && isLongEnough(el);
+}
+
+/** Nearest post ancestor (or self) for an incremental mutation target. */
+export function closestPost(node: Node, adapter: Adapter): HTMLElement | null {
+  const start = node instanceof Element ? node : node.parentElement;
+  if (start === null) return null;
+  const match = start.closest(adapter.selectors.join(','));
+  return match instanceof HTMLElement && isEligiblePost(match, adapter) ? match : null;
+}
+
 /**
- * US-002: what counts as a post is adapter-owned. Nodes under 40 visible
- * characters are dropped here so they never reach Jev.
+ * US-010 incremental scans: collect posts inside one changed subtree, plus the
+ * subtree itself when it is a post. Avoids full-document queries on scroll.
  */
-export function collectPosts(root: ParentNode, adapter: Adapter): HTMLElement[] {
+export function collectPostsIn(root: Element | Document, adapter: Adapter): HTMLElement[] {
   const found = new Set<HTMLElement>();
+  if (root instanceof HTMLElement && isPostElement(root, adapter) && isEligiblePost(root, adapter)) {
+    found.add(root);
+  }
   for (const selector of adapter.selectors) {
     for (const el of root.querySelectorAll(selector)) {
       if (!(el instanceof HTMLElement)) continue;
@@ -72,4 +91,12 @@ export function collectPosts(root: ParentNode, adapter: Adapter): HTMLElement[] 
     }
   }
   return pruneNested([...found]);
+}
+
+/**
+ * US-002: what counts as a post is adapter-owned. Nodes under 40 visible
+ * characters are dropped here so they never reach Jev.
+ */
+export function collectPosts(root: ParentNode, adapter: Adapter): HTMLElement[] {
+  return collectPostsIn(root as Element | Document, adapter);
 }

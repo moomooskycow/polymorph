@@ -1,0 +1,151 @@
+{
+  "schema": 1,
+  "generated": "2026-09-19",
+  "license": "CC0-1.0 (authored for Polymorph)",
+  "author": "moomooskycow",
+  "notes": "Every item is original artwork authored for Polymorph. No scraped or third-party meme files. Regeneration and authoring rules: see README.md in this directory.",
+  "items": [
+    {
+      "id": "cute-kitten-1",
+      "file": "cute-kitten-1.svg",
+      "category": "cute",
+      "caption": "A small cat approves of this replacement.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "cute-kitten-2",
+      "file": "cute-kitten-2.svg",
+      "category": "cute",
+      "caption": "Grey cat, thoroughly unbothered.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "cute-pup-1",
+      "file": "cute-pup-1.svg",
+      "category": "cute",
+      "caption": "A pup has taken this post's place.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "cute-otter-1",
+      "file": "cute-otter-1.svg",
+      "category": "cute",
+      "caption": "Otter, holding a shell for you.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "cute-duck-1",
+      "file": "cute-duck-1.svg",
+      "category": "cute",
+      "caption": "A duck gently bobbing instead of doomscrolling.",
+      "motion": "animated",
+      "staticFallback": "cute-duck-2",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "cute-duck-2",
+      "file": "cute-duck-2.svg",
+      "category": "cute",
+      "caption": "A duck, calmly floating.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "meme-shock",
+      "file": "meme-shock.svg",
+      "category": "meme",
+      "caption": "Shock, on your behalf.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "meme-side-eye",
+      "file": "meme-side-eye.svg",
+      "category": "meme",
+      "caption": "Side-eye deployed.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "meme-shrug",
+      "file": "meme-shrug.svg",
+      "category": "meme",
+      "caption": "A shrug: nobody knows, and that's fine.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "meme-panic",
+      "file": "meme-panic.svg",
+      "category": "meme",
+      "caption": "Tiny panic, gently wobbling.",
+      "motion": "animated",
+      "staticFallback": "meme-shock",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "motivate-small-steps",
+      "file": "motivate-small-steps.svg",
+      "category": "motivation",
+      "caption": "Small steps still move the line.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "motivate-close-tab",
+      "file": "motivate-close-tab.svg",
+      "category": "motivation",
+      "caption": "You can close this tab.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "motivate-rest",
+      "file": "motivate-rest.svg",
+      "category": "motivation",
+      "caption": "Rest is part of the work.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    },
+    {
+      "id": "motivate-start-ugly",
+      "file": "motivate-start-ugly.svg",
+      "category": "motivation",
+      "caption": "Start ugly. Improve later.",
+      "motion": "static",
+      "license": "CC0-1.0 (authored for Polymorph)",
+      "author": "moomooskycow",
+      "created": "2026-09-19"
+    }
+  ]
+}
