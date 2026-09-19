@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Polymorph",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Transforms posts matching rules you wrote in English into welcome replacements judged one post at a time by Jev.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -36,12 +36,6 @@
       "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": false
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["assets/replacements/*.svg"],
-      "matches": ["<all_urls>"]
     }
   ]
 }

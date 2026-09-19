@@ -10,7 +10,6 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     masterEnabled: true,
     rules: [enabledRule],
     allowlist: [...DEFAULT_ALLOWLIST],
-    replacementMix: 'mixed',
   };
   return Object.assign(base, overrides);
 }

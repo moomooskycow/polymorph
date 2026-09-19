@@ -1,17 +1,3 @@
-/** Where a transformed post's art comes from. */
-export type Category = 'cute' | 'meme' | 'motivation';
-
-/**
- * Global replacement mix. `collapse` is the v1 behavior (plain bar, no art).
- */
-export type ReplacementMix = 'mixed' | 'collapse' | Category;
-
-/**
- * Per-rule override. `inherit` uses the global mix. `kitten` is a v1 alias
- * that normalizes to `cute`.
- */
-export type Face = 'inherit' | 'collapse' | Category;
-
 /** One named English rule the operator wrote. */
 export interface Rule {
   /** Stable slug; used as the Jev question id. */
@@ -21,7 +7,6 @@ export interface Rule {
   /** Full English instruction sent to Jev. */
   instructions: string;
   enabled: boolean;
-  face: Face;
 }
 
 /** Everything the engine needs except the OpenRouter key. */
@@ -29,7 +14,6 @@ export interface Settings {
   masterEnabled: boolean;
   rules: Rule[];
   allowlist: string[];
-  replacementMix: ReplacementMix;
 }
 
 /** Why a post was left visible. Never user-facing in detail. */
@@ -50,7 +34,6 @@ export type Decision =
       verdict: 'collapse';
       ruleId: string;
       ruleName: string;
-      face: Face;
       probability: number;
       confidence: number;
     }
@@ -64,7 +47,6 @@ export interface EngineState {
   denied: boolean;
   enabledRules: number;
   keyPresent: boolean;
-  replacementMix: ReplacementMix;
 }
 
 /** Cumulative per-tab engine counters (genuinely measured by content.ts). */

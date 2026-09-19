@@ -1,4 +1,4 @@
-import type { ReplacementMix, Rule } from './types';
+import type { Rule } from './types';
 
 export const JEV_ENDPOINT = 'https://openrouter.ai/api/alpha/decisions';
 export const JEV_MODEL = 'typesafe/jev-1.13';
@@ -13,7 +13,7 @@ export const GATE_CONFIDENCE = 0.7;
 /** Posts with less visible text than this are never sent to Jev. */
 export const MIN_POST_CHARS = 40;
 
-/** US-009: how many recent picks to avoid repeating on one page. */
+/** US-014: how many recent user-media picks to avoid repeating on one page. */
 export const RECENT_PICK_LIMIT = 8;
 
 /** US-010: plain backoff after provider 429/timeouts. */
@@ -22,8 +22,6 @@ export const BACKOFF_MAX_MS = 60_000;
 
 /** US-011: recent-outcome ring buffer size. */
 export const DIAGNOSTIC_LIMIT = 100;
-
-export const DEFAULT_REPLACEMENT_MIX: ReplacementMix = 'mixed';
 
 const BASE_ALLOWLIST = [
   'x.com',
@@ -46,8 +44,8 @@ export const DEFAULT_ALLOWLIST: readonly string[] = BASE_ALLOWLIST.flatMap((host
 ]);
 
 /**
- * US-001: three examples ship disabled. US-008: they inherit the global mix
- * rather than pinning a face, so the replacement mix chooser controls them.
+ * US-001: three examples ship disabled. Replacement media is chosen from the
+ * operator's library for every rule (US-014); rules carry no visual settings.
  */
 export const EXAMPLE_RULES: readonly Rule[] = [
   {
@@ -56,7 +54,6 @@ export const EXAMPLE_RULES: readonly Rule[] = [
     instructions:
       'The post is arguing politics or picking a partisan fight. Match insults, dunks, and tribal point-scoring. Do not match neutral explainers of election mechanics, how a policy works, or how government processes function.',
     enabled: false,
-    face: 'inherit',
   },
   {
     id: 'rage-bait',
@@ -64,7 +61,6 @@ export const EXAMPLE_RULES: readonly Rule[] = [
     instructions:
       'The post is engineered to provoke outrage rather than inform: baiting, inflammatory framing, or an "everyone is angry about this" hook. Do not match good-faith criticism or reporting that merely describes something upsetting.',
     enabled: false,
-    face: 'inherit',
   },
   {
     id: 'reply-guy',
@@ -72,6 +68,5 @@ export const EXAMPLE_RULES: readonly Rule[] = [
     instructions:
       'The post is an unsolicited correction or nitpick aimed at another person ("well, actually"), where the point is to be right rather than to help. Do not match genuine questions, teaching, or adding missing context in good faith.',
     enabled: false,
-    face: 'inherit',
   },
 ];

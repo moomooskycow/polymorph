@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Verifies that `pnpm build` produced a loadable unpacked MV3 extension.
- * Checks file presence and wiring the way Chrome resolves it, not the build
- * tool's self-report.
+ * Verifies that `pnpm build` produced a loadable unpacked MV3 extension:
+ * files Chrome resolves, icon dimensions, no bundled replacement media, and
+ * no unexplained external URLs in the shipped code.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -63,51 +63,59 @@ for (const match of background.matchAll(/from\s*["']\.\/([^"']+)["']/g)) {
   check(existsSync(join(dist, match[1])), `background.js imports missing ${match[1]}`);
 }
 
-const replacementsDir = join(dist, 'assets', 'replacements');
-const svgFiles = existsSync(replacementsDir)
-  ? readdirSync(replacementsDir).filter((file) => file.endsWith('.svg'))
-  : [];
-check(svgFiles.length >= 12, `assets/replacements/ has ${svgFiles.length} SVGs, expected at least 12`);
-for (const file of svgFiles) {
-  check(readFileSync(join(replacementsDir, file), 'utf8').startsWith('<svg'), `${file} is not SVG markup`);
+// US-014: user media lives in IndexedDB. No replacement art may be bundled.
+check(
+  !existsSync(join(dist, 'assets', 'replacements')),
+  'dist/assets/replacements must not exist: replacement media is user-supplied',
+);
+for (const file of [manifest.background.service_worker, manifest.content_scripts[0].js[0]]) {
+  const source = readFileSync(join(dist, file), 'utf8');
+  check(!source.includes('assets/replacements'), `${file} references bundled replacements`);
 }
 
-const libraryManifestPath = join(replacementsDir, 'manifest.json');
-check(existsSync(libraryManifestPath), 'assets/replacements/manifest.json missing');
-if (existsSync(libraryManifestPath)) {
-  const library = JSON.parse(readFileSync(libraryManifestPath, 'utf8'));
-  check(Array.isArray(library.items) && library.items.length >= 12, 'library manifest has too few items');
-  for (const item of library.items ?? []) {
-    check(
-      typeof item.file === 'string' && existsSync(join(replacementsDir, item.file)),
-      `library item ${item.id} missing ${item.file}`,
-    );
-    check(typeof item.license === 'string' && item.license.length > 0, `library item ${item.id} has no license`);
+// No new external URLs in shipped code. Known, intentional endpoints only.
+const ALLOWED_URL_PATTERNS = [
+  /^https:\/\/openrouter\.ai\//,
+  /^https:\/\/github\.com\/moomooskycow\/polymorph$/,
+  /^http:\/\/www\.w3\.org\/2000\/svg$/,
+];
+const assetDirs = [
+  join(dist, 'assets'),
+  join(dist, 'icons'),
+];
+const jsFiles = [
+  join(dist, manifest.background.service_worker),
+  join(dist, manifest.content_scripts[0].js[0]),
+];
+if (existsSync(join(dist, 'assets'))) {
+  for (const file of readdirSync(join(dist, 'assets'))) {
+    if (file.endsWith('.js')) jsFiles.push(join(dist, 'assets', file));
   }
 }
-check(
-  existsSync(join(replacementsDir, 'README.md')),
-  'assets/replacements/README.md (regeneration instructions) missing',
-);
+const urlPattern = /https?:\/\/[^\s"'`<>)]+/g;
+for (const file of jsFiles) {
+  if (!existsSync(file)) continue;
+  const source = readFileSync(file, 'utf8');
+  for (const match of source.matchAll(urlPattern)) {
+    const url = match[0];
+    check(
+      ALLOWED_URL_PATTERNS.some((pattern) => pattern.test(url)),
+      `${file} contains an unexpected external URL: ${url}`,
+    );
+  }
+}
+for (const dir of assetDirs) {
+  if (!existsSync(dir)) continue;
+}
+
 check(
   existsSync(join(dist, 'assets', 'icons', 'polymorph.svg')),
   'assets/icons/polymorph.svg source missing',
 );
-
-for (const resource of (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? [])) {
-  if (!resource.includes('*')) continue;
-  const prefix = resource.slice(0, resource.indexOf('*')).replace(/\/$/, '');
-  check(existsSync(join(dist, prefix)), `web_accessible_resources ${resource} matches nothing`);
-  if (prefix.endsWith('replacements')) {
-    check(svgFiles.length > 0, `web_accessible_resources ${resource} matches no SVGs`);
-  }
-}
 
 if (problems.length > 0) {
   console.error('dist verification failed:');
   for (const problem of problems) console.error(`  - ${problem}`);
   process.exit(1);
 }
-console.log(
-  `dist verification passed: manifest, worker, content, popup, options, ${svgFiles.length} replacements, icons 16/32/48/128`,
-);
+console.log('dist verification passed: manifest, worker, content, popup, options, icons 16/32/48/128, no bundled media, URLs allowlisted');

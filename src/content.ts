@@ -5,26 +5,30 @@ import {
   collectPostsIn,
   visibleText,
 } from './adapters';
-import { CARD_TAG, buildCard, isCardNode, isInsideCard, restorePost, transformPost, type CardView } from './card';
+import {
+  CARD_TAG,
+  buildCard,
+  isCardNode,
+  isInsideCard,
+  restorePost,
+  transformPost,
+  type CardMedia,
+  type CardView,
+} from './card';
 import { MIN_POST_CHARS } from './defaults';
 import { isDenylisted, normalizeHost } from './hosts';
 import { STATE_ATTR, clearMark, markPost, postSignature, readMark } from './marking';
-import { REPLACEMENTS, type ReplacementAsset } from './replacements/library';
-import {
-  applyReducedMotion,
-  pickReplacement,
-  rememberRecent,
-  resolveMix,
-} from './replacements/selection';
-import { emptyCounters, type Decision, type EngineState, type Face, type TabCounters } from './types';
+import { base64ToBytes } from './media/bytes';
+import { rememberRecent } from './media/selection';
+import { emptyCounters, type Decision, type EngineState, type TabCounters } from './types';
 
 /**
  * US-004: this file's first observable action is the denylist check. On a
  * denylisted host it registers no observer and touches no DOM.
  *
  * US-010: posts are tracked by content signature, scans are incremental, and
- * recycled nodes are re-evaluated. US-008: matching posts become replacement
- * cards, never deletions.
+ * recycled nodes are re-evaluated. US-014: a matched post draws one image
+ * from the operator's local library; an empty library collapses compactly.
  */
 let pageHost = normalizeHost(window.location.hostname);
 let adapter = adapterForHost(pageHost);
@@ -35,7 +39,6 @@ let deferredTimer: number | null = null;
 let statsTimer: number | null = null;
 let statsDirty = false;
 let observer: MutationObserver | null = null;
-let replacementMix: EngineState['replacementMix'] = 'mixed';
 let reducedMotion = false;
 let recentPicks: string[] = [];
 let stats: TabCounters = emptyCounters();
@@ -44,21 +47,63 @@ const inFlight = new Set<HTMLElement>();
 
 interface TrackedPost {
   view: CardView;
-  /** Base asset (before reduced-motion substitution); null for collapse. */
-  assetId: string | null;
   ruleId: string;
   ruleName: string;
-  face: Face;
   /** Content signature the decision was made for. */
   sig: string;
+  /** Library asset this card drew, if any. */
+  assetId: string | null;
 }
 
 const tracked = new Map<HTMLElement, TrackedPost>();
 
-/** US-009: apply the motion preference to a base pick without changing it. */
-function shownAsset(base: ReplacementAsset | null): ReplacementAsset | null {
-  return base === null ? null : applyReducedMotion(base, REPLACEMENTS, reducedMotion);
+interface PickReply {
+  ok: boolean;
+  empty?: boolean;
+  id?: string;
+  mime?: string;
+  base64?: string;
+  issue?: string;
 }
+
+interface ResolvedMedia {
+  url: string;
+  mime: string;
+  frozenUrl: string | null;
+}
+
+const MEDIA_URL_CACHE_LIMIT = 64;
+const mediaUrls = new Map<string, ResolvedMedia>();
+
+function releaseMedia(entry: ResolvedMedia): void {
+  URL.revokeObjectURL(entry.url);
+  if (entry.frozenUrl !== null && entry.frozenUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(entry.frozenUrl);
+  }
+}
+
+/** LRU-bounded object URLs; revoked on eviction and on page teardown. */
+function cacheMedia(id: string, entry: ResolvedMedia): void {
+  if (mediaUrls.size >= MEDIA_URL_CACHE_LIMIT) {
+    const oldest = mediaUrls.keys().next().value;
+    if (oldest !== undefined) {
+      const stale = mediaUrls.get(oldest);
+      if (stale !== undefined) releaseMedia(stale);
+      mediaUrls.delete(oldest);
+    }
+  }
+  mediaUrls.set(id, entry);
+}
+
+function touchMedia(id: string, entry: ResolvedMedia): void {
+  mediaUrls.delete(id);
+  mediaUrls.set(id, entry);
+}
+
+window.addEventListener('pagehide', () => {
+  for (const entry of mediaUrls.values()) releaseMedia(entry);
+  mediaUrls.clear();
+});
 
 async function send<T>(message: unknown): Promise<T | null> {
   try {
@@ -80,13 +125,7 @@ function scheduleStats(): void {
 }
 
 function reportEvent(
-  outcome:
-    | 'transformed'
-    | 'left'
-    | 'skipped'
-    | 'restored'
-    | 'deferred'
-    | 'error',
+  outcome: 'transformed' | 'left' | 'skipped' | 'restored' | 'deferred' | 'error',
   extra: {
     ruleId?: string;
     assetId?: string;
@@ -99,6 +138,97 @@ function reportEvent(
     type: 'reportEvent',
     event: { at: Date.now(), host: pageHost, outcome, ...extra },
   });
+}
+
+/* ------------------------------------------------------------------ media */
+
+/**
+ * US-014: draw the asset for this post. The worker holds the pile and the
+ * stable-selection rule; this side only turns bytes into a local blob URL.
+ * A null return means "no media", which renders the compact collapse card.
+ */
+async function resolveMedia(
+  key: string,
+  updateRecency: boolean,
+): Promise<{ media: CardMedia | null; assetId: string | null }> {
+  const reply = await send<PickReply>({
+    type: 'media:pick',
+    key,
+    recent: recentPicks,
+  });
+  if (
+    reply === null ||
+    reply.ok !== true ||
+    reply.empty === true ||
+    typeof reply.id !== 'string' ||
+    typeof reply.mime !== 'string' ||
+    typeof reply.base64 !== 'string'
+  ) {
+    return { media: null, assetId: null };
+  }
+
+  let entry = mediaUrls.get(reply.id);
+  if (entry === undefined) {
+    try {
+      const bytes = base64ToBytes(reply.base64);
+      entry = {
+        url: URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: reply.mime })),
+        mime: reply.mime,
+        frozenUrl: null,
+      };
+    } catch {
+      return { media: null, assetId: null };
+    }
+    cacheMedia(reply.id, entry);
+  } else {
+    touchMedia(reply.id, entry);
+  }
+
+  const media = await mediaVariant(entry);
+  if (updateRecency) recentPicks = rememberRecent(recentPicks, reply.id);
+  if (media === null) return { media: null, assetId: reply.id };
+  return { media, assetId: reply.id };
+}
+
+/**
+ * Reduced-motion GIFs become a first-frame PNG. If the frame cannot be
+ * drawn, the caller collapses instead of playing an animation.
+ */
+async function mediaVariant(entry: ResolvedMedia): Promise<CardMedia | null> {
+  if (entry.mime !== 'image/gif' || !reducedMotion) {
+    return { url: entry.url, mime: entry.mime, frozen: false };
+  }
+  if (entry.frozenUrl !== null) {
+    return { url: entry.frozenUrl, mime: 'image/png', frozen: true };
+  }
+  const frozen = await freezeFirstFrame(entry.url);
+  if (frozen === null) return null;
+  entry.frozenUrl = frozen;
+  return { url: frozen, mime: 'image/png', frozen: true };
+}
+
+async function freezeFirstFrame(url: string): Promise<string | null> {
+  try {
+    const image = new Image();
+    image.src = url;
+    if (typeof image.decode === 'function') {
+      await image.decode();
+    } else {
+      await new Promise<void>((resolve) => {
+        image.onload = () => resolve();
+        image.onerror = () => resolve();
+      });
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth || 1;
+    canvas.height = image.naturalHeight || 1;
+    const context = canvas.getContext('2d');
+    if (context === null) return null;
+    context.drawImage(image, 0, 0);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
 }
 
 /* ---------------------------------------------------------------- scanning */
@@ -219,18 +349,18 @@ function evaluatePost(post: HTMLElement): void {
   const mine = epoch;
   const startedAt = performance.now();
   void send<Decision>({ type: 'classify', text }).then((reply) => {
-    applyDecision(post, text, sig, reply, startedAt, mine);
+    void applyDecision(post, text, sig, reply, startedAt, mine);
   });
 }
 
-function applyDecision(
+async function applyDecision(
   post: HTMLElement,
   text: string,
   sig: string,
   reply: Decision | null,
   startedAt: number,
   mine: number,
-): void {
+): Promise<void> {
   inFlight.delete(post);
 
   // A settings/host change happened while the call was in flight: the pause
@@ -266,41 +396,39 @@ function applyDecision(
   }
 
   if (reply.verdict === 'collapse') {
-    const mix = resolveMix(reply.face, replacementMix);
-    const base =
-      mix === 'collapse'
-        ? null
-        : pickReplacement({
-            key: `${sig}\u0000${reply.ruleId}`,
-            mix,
-            assets: REPLACEMENTS,
-            recent: recentPicks,
-          });
-    const view = buildCard({
-      ruleName: reply.ruleName,
-      asset: shownAsset(base),
-      reducedMotion,
-    });
+    const { media, assetId } = await resolveMedia(`${sig}\u0000${reply.ruleId}`, true);
+
+    // resolveMedia is async: re-check that this node is still the same post.
+    if (mine !== epoch) return;
+    if (!post.isConnected || postSignature(visibleText(post)) !== sig) {
+      const mark = readMark(post);
+      if (mark !== null && mark.state === 'pending') {
+        clearMark(post);
+        pendingRoots.add(post);
+        scheduleFlush();
+      }
+      return;
+    }
+
+    const view = buildCard({ ruleName: reply.ruleName, media, reducedMotion });
     if (!transformPost(post, view)) {
       markPost(post, 'left', sig);
       return;
     }
     view.showOriginal.addEventListener('click', () => showOriginal(post));
-    if (base !== null) recentPicks = rememberRecent(recentPicks, base.id);
     tracked.set(post, {
       view,
-      assetId: base?.id ?? null,
       ruleId: reply.ruleId,
       ruleName: reply.ruleName,
-      face: reply.face,
       sig,
+      assetId,
     });
     markPost(post, 'transformed', sig, contentSignature(post));
     stats.transformed++;
     scheduleStats();
     reportEvent('transformed', {
       ruleId: reply.ruleId,
-      ...(base === null ? {} : { assetId: base.id }),
+      ...(assetId === null ? {} : { assetId }),
       durationMs,
       textLength: text.length,
     });
@@ -429,61 +557,67 @@ async function refresh(): Promise<void> {
     restoreAllTracked(true);
     return;
   }
-  replacementMix = state.replacementMix;
-  reapplyMix();
   start();
 }
 
-/** US-008: a mix change redraws existing cards without another Jev call. */
-function reapplyMix(): void {
-  for (const entry of tracked.values()) {
-    const mix = resolveMix(entry.face, replacementMix);
-    const base =
-      mix === 'collapse'
-        ? null
-        : pickReplacement({
-            key: `${entry.sig}\u0000${entry.ruleId}`,
-            mix,
-            assets: REPLACEMENTS,
-            recent: recentPicks,
-          });
-    entry.assetId = base?.id ?? null;
-    entry.view.setAsset(shownAsset(base));
+/**
+ * US-014: after the library changes, existing cards redraw from the new pile;
+ * an emptied library turns them back into compact collapse cards.
+ */
+async function repickTracked(): Promise<void> {
+  const entries = [...tracked.entries()];
+  for (const [post, entry] of entries) {
+    const { media, assetId } = await resolveMedia(`${entry.sig}\u0000${entry.ruleId}`, false);
+    if (!tracked.has(post)) continue;
+    entry.assetId = assetId;
+    entry.view.setMedia(media);
+    if (assetId === null) {
+      entry.view.setReducedMotion(reducedMotion);
+    }
   }
 }
 
-function applyMotionChange(): void {
+async function applyMotionChange(): Promise<void> {
   for (const entry of tracked.values()) {
     entry.view.setReducedMotion(reducedMotion);
-    const base =
-      entry.assetId === null
-        ? null
-        : (REPLACEMENTS.find((asset) => asset.id === entry.assetId) ?? null);
-    entry.view.setAsset(shownAsset(base));
+    if (entry.assetId === null) continue;
+    const resolved = mediaUrls.get(entry.assetId);
+    if (resolved === undefined) continue;
+    const media = await mediaVariant(resolved);
+    entry.view.setMedia(media);
   }
 }
 
 function isSettingsChanged(message: unknown): boolean {
-  return (
-    message !== null &&
-    typeof message === 'object' &&
-    (message as { type?: unknown }).type === 'settingsChanged'
-  );
+  const type = message !== null && typeof message === 'object'
+    ? (message as { type?: unknown }).type
+    : null;
+  return type === 'settingsChanged';
+}
+
+function isMediaChanged(message: unknown): boolean {
+  const type = message !== null && typeof message === 'object'
+    ? (message as { type?: unknown }).type
+    : null;
+  return type === 'mediaChanged';
 }
 
 /* ---------------------------------------------------------------------- init */
 
 if (pageHost !== '' && !isDenylisted(pageHost)) {
+  // QA-visible injection marker; no data, no behavior.
+  document.documentElement.setAttribute('data-polymorph-extension', '1');
   const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
   reducedMotion = motionQuery.matches;
   motionQuery.addEventListener('change', (event) => {
     reducedMotion = event.matches;
-    applyMotionChange();
+    void applyMotionChange();
   });
   window.addEventListener('popstate', () => void refresh());
   window.addEventListener('hashchange', () => void refresh());
   chrome.runtime.onMessage.addListener((message) => {
     if (isSettingsChanged(message)) void refresh();
+    if (isMediaChanged(message)) void repickTracked();
   });
   void refresh();
 }

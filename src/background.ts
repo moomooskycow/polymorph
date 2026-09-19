@@ -14,6 +14,11 @@ import { buildJevBody, isRetryableFailure, parseAnswers, requestJevDetailed } fr
 import { clearKey, hasKey, loadKey, saveKey } from './jev/key';
 import { normalizeText, precheck } from './jev/precheck';
 import { Limiter } from './jev/queue';
+import { base64ToBytes } from './media/bytes';
+import { decodeRaster, makeThumbnail } from './media/browser';
+import { MediaService } from './media/service';
+import { IdbMediaStore } from './media/store';
+import { emptyUsage } from './media/types';
 import { enabledRules, pickMatch, questionForRule, questionsForRules } from './policy';
 import { ensureDefaults, loadSettings } from './settings';
 import { emptyCounters, type Decision, type EngineState, type Rule, type TabCounters } from './types';
@@ -115,7 +120,12 @@ type Message =
   | { type: 'reportStats'; stats: TabCounters }
   | { type: 'reportEvent'; event: Partial<DiagnosticEvent> }
   | { type: 'getDiagnostics' }
-  | { type: 'clearDiagnostics' };
+  | { type: 'clearDiagnostics' }
+  | { type: 'media:list' }
+  | { type: 'media:add'; mime?: string; base64?: string }
+  | { type: 'media:remove'; id: string }
+  | { type: 'media:clear' }
+  | { type: 'media:pick'; key: string; recent?: string[] };
 
 const COUNTER_KEYS: readonly (keyof TabCounters)[] = [
   'discovered',
@@ -151,9 +161,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     'masterEnabled' in changes ||
     'rules' in changes ||
     'allowlist' in changes ||
-    'replacementMix' in changes ||
     'openrouterKey' in changes;
-  if (relevant) void notifyTabs();
+  if (relevant) void notifyTabs({ type: 'settingsChanged' });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -173,13 +182,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function notifyTabs(): Promise<void> {
+async function notifyTabs(message: { type: string }): Promise<void> {
   const tabs = await chrome.tabs.query({});
   await Promise.all(
     tabs.map(async (tab) => {
       if (tab.id === undefined) return;
       try {
-        await chrome.tabs.sendMessage(tab.id, { type: 'settingsChanged' });
+        await chrome.tabs.sendMessage(tab.id, message);
       } catch {
         // No content script in that tab; nothing to notify.
       }
@@ -229,6 +238,16 @@ async function handleMessage(
       }
       void persistDiagnostics();
       return { ok: true };
+    case 'media:list':
+      return mediaList();
+    case 'media:add':
+      return mediaAdd(message);
+    case 'media:remove':
+      return mediaRemove(message.id);
+    case 'media:clear':
+      return mediaClear();
+    case 'media:pick':
+      return mediaPick(message.key, message.recent ?? []);
     default:
       return { error: 'unknown message' };
   }
@@ -246,7 +265,6 @@ async function engineState(sender: chrome.runtime.MessageSender): Promise<Engine
     denied,
     enabledRules: enabledRules(settings.rules).length,
     keyPresent,
-    replacementMix: settings.replacementMix,
   };
 }
 
@@ -342,7 +360,6 @@ async function decide(args: {
           verdict: 'collapse',
           ruleId: match.rule.id,
           ruleName: match.rule.name,
-          face: match.rule.face,
           probability: match.probability,
           confidence: match.confidence,
         };
@@ -367,7 +384,6 @@ async function testConnection(): Promise<{
     instructions:
       'Fixed synthetic test. Match if the text mentions Polymorph; otherwise no_match.',
     enabled: true,
-    face: 'inherit',
   };
   const body = buildJevBody({
     host: 'polymorph.local',
@@ -510,5 +526,88 @@ async function persistDiagnostics(): Promise<void> {
     await chrome.storage.session.set({ [DIAGNOSTICS_STORAGE]: ring.list() });
   } catch {
     // Non-fatal.
+  }
+}
+/* ------------------------------------------------------------------ media */
+
+let mediaServicePromise: Promise<MediaService> | null = null;
+
+async function mediaService(): Promise<MediaService> {
+  if (mediaServicePromise === null) {
+    mediaServicePromise = IdbMediaStore.open()
+      .then((store) => new MediaService({ store, decode: decodeRaster, makeThumb: makeThumbnail }))
+      .catch((error: unknown) => {
+        mediaServicePromise = null;
+        throw error;
+      });
+  }
+  return mediaServicePromise;
+}
+
+const STORE_UNAVAILABLE = { issue: 'store_unavailable' as const };
+
+async function mediaList(): Promise<unknown> {
+  try {
+    const service = await mediaService();
+    return { ok: true, ...(await service.list()) };
+  } catch {
+    return { ok: false, ...STORE_UNAVAILABLE, assets: [], usage: emptyUsage() };
+  }
+}
+
+async function mediaAdd(message: { mime?: string; base64?: string }): Promise<unknown> {
+  if (typeof message.base64 !== 'string' || typeof message.mime !== 'string') {
+    return { ok: false, issue: 'unsupported', message: 'Missing file data.' };
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(message.base64);
+  } catch {
+    return { ok: false, issue: 'unsupported', message: 'The file data was not valid.' };
+  }
+  try {
+    const service = await mediaService();
+    const result = await service.add({ mime: message.mime, bytes });
+    if (result.ok) void notifyTabs({ type: 'mediaChanged' });
+    return result;
+  } catch {
+    return { ok: false, ...STORE_UNAVAILABLE, message: 'The media library is unavailable.' };
+  }
+}
+
+async function mediaRemove(id: string): Promise<unknown> {
+  if (typeof id !== 'string' || id.length === 0) {
+    return { ok: false, removed: false, usage: emptyUsage() };
+  }
+  try {
+    const service = await mediaService();
+    const result = await service.remove(id);
+    if (result.ok) void notifyTabs({ type: 'mediaChanged' });
+    return { ok: true, removed: result.ok, usage: result.usage };
+  } catch {
+    return { ok: false, removed: false, usage: emptyUsage() };
+  }
+}
+
+async function mediaClear(): Promise<unknown> {
+  try {
+    const service = await mediaService();
+    const usage = await service.clear();
+    void notifyTabs({ type: 'mediaChanged' });
+    return { ok: true, usage };
+  } catch {
+    return { ok: false, usage: emptyUsage() };
+  }
+}
+
+async function mediaPick(key: string, recent: string[]): Promise<unknown> {
+  if (typeof key !== 'string' || key.length === 0) {
+    return { ok: false, issue: 'unsupported' };
+  }
+  try {
+    const service = await mediaService();
+    return await service.pick(key, recent.slice(0, 64).map(String));
+  } catch {
+    return { ok: false, ...STORE_UNAVAILABLE };
   }
 }

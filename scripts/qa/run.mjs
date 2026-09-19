@@ -21,6 +21,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { startServer, QA_ENDPOINT } from './lib/server.mjs';
+import { ensureFixtures } from './lib/fixtures.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -42,11 +43,12 @@ const OUT = resolve(opt('out', join(homedir(), '.cache', 'polymorph-qa', 'runs',
 const PROFILE = join(homedir(), '.cache', 'polymorph-qa', 'profiles', RUN_ID);
 mkdirSync(OUT, { recursive: true });
 mkdirSync(PROFILE, { recursive: true });
+const FIXTURES = ensureFixtures(join(OUT, 'fixtures'));
 
 const KEY = 'sk-or-qa-fixture-key-not-a-real-secret';
 const BASE_ALLOWLIST = ['x.com', 'www.x.com', 'twitter.com', 'reddit.com', 'www.reddit.com', 'news.ycombinator.com', 'youtube.com', 'fixture.test'];
 const RULES = [
-  { id: 'rage-bait', name: 'Rage bait', instructions: 'The post is engineered to provoke outrage. Do not match calm technical posts.', enabled: true, face: 'kitten' },
+  { id: 'rage-bait', name: 'Rage bait', instructions: 'The post is engineered to provoke outrage. Do not match calm technical posts.', enabled: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -192,12 +194,27 @@ async function removeStorage(ctx, id, keys) {
 }
 async function configure(ctx, id, { key = KEY, rules = RULES, allowlist = BASE_ALLOWLIST, master = true, endpoint = QA_ENDPOINT } = {}) {
   const page = await extPage(ctx, id, 'options.html');
-  await page.evaluate(async (cfg) => {
-    const patch = { jevEndpointOverride: cfg.endpoint, masterEnabled: cfg.master, rules: cfg.rules, allowlist: cfg.allowlist };
-    if (cfg.key === null) await chrome.storage.local.remove('openrouterKey');
-    else patch.openrouterKey = cfg.key;
-    await chrome.storage.local.set(patch);
-  }, { endpoint, master, rules, allowlist, key });
+  const wanted = { endpoint, master, rules, allowlist, key };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await page.evaluate(async (cfg) => {
+      const patch = { jevEndpointOverride: cfg.endpoint, masterEnabled: cfg.master, rules: cfg.rules, allowlist: cfg.allowlist };
+      if (cfg.key === null) await chrome.storage.local.remove('openrouterKey');
+      else patch.openrouterKey = cfg.key;
+      await chrome.storage.local.set(patch);
+    }, wanted);
+    const actual = await page.evaluate(async () => {
+      const raw = await chrome.storage.local.get(['rules', 'allowlist', 'openrouterKey', 'masterEnabled']);
+      return { rules: raw.rules, allowlist: raw.allowlist, key: typeof raw.openrouterKey === 'string', master: raw.masterEnabled };
+    });
+    const rulesMatch =
+      Array.isArray(actual.rules) &&
+      actual.rules.length === rules.length &&
+      actual.rules.every((rule, index) => rule.id === rules[index].id && rule.enabled === (rules[index].enabled ?? true));
+    const allowlistMatch = Array.isArray(actual.allowlist) && allowlist.every((host) => actual.allowlist.includes(host));
+    if (rulesMatch && allowlistMatch && actual.key === (key !== null) && actual.master === master) return;
+    await page.waitForTimeout(250);
+  }
+  throw new Error('configure did not persist');
 }
 
 async function openFixture(ctx, url) {
@@ -207,12 +224,104 @@ async function openFixture(ctx, url) {
   return page;
 }
 
+/** Cold-start helper: waits until the content script has injected. */
+async function waitForContent(page, timeout = 30000) {
+  await page
+    .waitForFunction(
+      () => document.documentElement.hasAttribute('data-polymorph-extension'),
+      null,
+      { timeout, polling: 100 },
+    )
+    .catch(() => {});
+}
+
 async function waitBars(page, n, timeout = 15000) {
   await page.waitForFunction(
     (count) => document.querySelectorAll('polymorph-collapse, polymorph-card').length >= count,
     n,
-    { timeout },
+    { timeout, polling: 100 },
   );
+}
+
+/** US-014: card image info for the media scenarios. */
+async function cardMedia(page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('polymorph-card')].map((card) => {
+      const root = card.shadowRoot;
+      const img = root?.querySelector('img') ?? null;
+      const rect = card.getBoundingClientRect();
+      return {
+        src: img?.getAttribute('src') ?? null,
+        mime: img?.getAttribute('data-media-mime') ?? null,
+        frozen: img?.getAttribute('data-media-frozen') ?? null,
+        text: (root?.textContent ?? '').trim(),
+        height: Math.round(rect.height),
+        hasShow: /show original/i.test(root?.innerHTML ?? ''),
+      };
+    }),
+  );
+}
+
+async function waitCardImages(page, n, timeout = 15000) {
+  await page.waitForFunction(
+    (count) => {
+      let found = 0;
+      for (const card of document.querySelectorAll('polymorph-card')) {
+        const src = card.shadowRoot?.querySelector('img')?.getAttribute('src') ?? '';
+        if (src.startsWith('blob:') || src.startsWith('data:')) found += 1;
+      }
+      return found >= count;
+    },
+    n,
+    { timeout, polling: 100 },
+  );
+}
+
+async function mediaState(ctx, id) {
+  return extPage(ctx, id, 'options.html').then((pg) =>
+    pg.evaluate(async () => chrome.runtime.sendMessage({ type: 'media:list' })),
+  );
+}
+
+async function clearMedia(ctx, id) {
+  await extPage(ctx, id, 'options.html').then((pg) =>
+    pg.evaluate(async () => chrome.runtime.sendMessage({ type: 'media:clear' })),
+  );
+}
+
+async function addMedia(ctx, id, files, expected = files.length) {
+  const options = await extPage(ctx, id, 'options.html');
+  await options.setInputFiles('#media-input', files);
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const state = await mediaState(ctx, id);
+    if ((state?.usage?.count ?? 0) >= expected) return;
+    await options.waitForTimeout(200);
+  }
+  throw new Error(`media add did not reach ${expected} item(s)`);
+}
+
+const ALLOWED_HOSTS = new Set([
+  'x.com', 'www.x.com', 'twitter.com', 'reddit.com', 'www.reddit.com',
+  'news.ycombinator.com', 'youtube.com', 'gmail.com', 'mail.google.com',
+  'fixture.test', 'openrouter.ai',
+]);
+
+function isAllowedRequest(url) {
+  if (
+    url.startsWith('chrome-extension://') ||
+    url.startsWith('data:') ||
+    url.startsWith('blob:') ||
+    url.startsWith('about:') ||
+    url.startsWith('devtools://')
+  ) {
+    return true;
+  }
+  try {
+    return ALLOWED_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
 }
 
 /** Waits until the collapsed-bar count stops changing (settles the async pipeline). */
@@ -417,7 +526,7 @@ try {
     await page.waitForFunction(() => {
       const el = document.querySelector('[data-qa="post-0"]');
       return el !== null && getComputedStyle(el).display === 'none';
-    }, null, { timeout: 15000 }).catch(() => {});
+    }, null, { polling: 100, timeout: 15000 }).catch(() => {});
     await waitBars(page, 1);
     check('provider was called', provider.count() > 0, String(provider.count()));
     const hidden = await postHidden(page, 'post-0');
@@ -427,7 +536,7 @@ try {
     check('card has a Show original control', /show original|restore/i.test(bars[0].full), bars[0].full.slice(0, 160));
     soft('bar bounded width', bars[0].width <= 600, `${bars[0].width}px`);
     soft('bar bounded height', bars[0].height <= 220, `${bars[0].height}px`);
-    soft('bar includes bundled art', bars[0].hasSvg, 'no svg in bar');
+    soft('empty library card has no image', !bars[0].full.includes('<img'), 'img in empty-library card');
     await shot(page, 'feed-collapsed');
     // Interactivity preserved
     const clicks = await page.evaluate(() => {
@@ -471,7 +580,7 @@ try {
     await page.waitForFunction(() => {
       const el = document.querySelector('[data-qa="appended-0"]');
       return el && getComputedStyle(el).display === 'none';
-    }, null, { timeout: 10000 }).catch(() => {});
+    }, null, { polling: 100, timeout: 10000 }).catch(() => {});
     const hidden = await postHidden(page, 'appended-0');
     check('appended post collapsed', hidden === true, String(hidden));
   });
@@ -490,7 +599,7 @@ try {
     await page.waitForFunction(() => {
       const el = document.querySelector('[data-qa="post-0"]');
       return el && getComputedStyle(el).display === 'none';
-    }, null, { timeout: 10000 }).catch(() => {});
+    }, null, { polling: 100, timeout: 10000 }).catch(() => {});
     const hidden = await postHidden(page, 'post-0');
     check('recycled left node re-evaluated and collapsed', hidden === true, String(hidden));
 
@@ -507,7 +616,7 @@ try {
     await page2.waitForFunction(() => {
       const el = document.querySelector('[data-qa="post-0"]');
       return el && getComputedStyle(el).display !== 'none';
-    }, null, { timeout: 10000 }).catch(() => {});
+    }, null, { polling: 100, timeout: 10000 }).catch(() => {});
     const hidden2 = await postHidden(page2, 'post-0');
     check('collapsed recycled node restored when content no longer matches', hidden2 === false, String(hidden2));
     provider.setMode('ok');
@@ -518,7 +627,7 @@ try {
     const page = await openFixture(ctx, `https://x.com:${port}/feed?tag=SCEN5`);
     await waitBars(page, 1);
     await setStorage(ctx, extId, { masterEnabled: false });
-    await page.waitForFunction(() => document.querySelectorAll('polymorph-collapse, polymorph-card').length === 0, null, { timeout: 8000 }).catch(() => {});
+    await page.waitForFunction(() => document.querySelectorAll('polymorph-collapse, polymorph-card').length === 0, null, { timeout: 8000, polling: 100 }).catch(() => {});
     const bars = await barInfo(page);
     const hidden = await postHidden(page, 'post-0');
     check('bars removed when disabled', bars.length === 0, `${bars.length} bars remain`);
@@ -628,55 +737,216 @@ try {
     provider.setMode('ok');
   });
 
-  await scenario('replacement-library', async () => {
-    provider.reset(); provider.setMode('ok');
-    await configure(ctx, extId, {});
-    const page = await openFixture(ctx, `https://x.com:${port}/feed?tag=SCEN9`);
-    await waitBars(page, 3);
-    const bars = await barInfo(page);
-    const svgs = bars.filter((b) => b.hasSvg).length;
-    soft('bars render bundled art', svgs >= 3, `${svgs}/${bars.length} with svg`);
-    soft('captions present', bars.every((b) => b.text.length > 3), bars.map((b) => b.text.slice(0, 30)).join(' | '));
-    soft('art bounded height', bars.every((b) => b.height <= 220), bars.map((b) => b.height).join(','));
-    const hashes = new Set(bars.map((b) => b.hash));
-    soft('replacement diversity (>=3 distinct across 8 posts)', hashes.size >= 3, `${hashes.size} distinct`);
-    await shot(page, 'replacement-diversity');
-    // Stability: DOM rerender with same text keeps the same replacement.
-    const target = await page.evaluate(() => {
-      const el = document.querySelector('[data-qa="post-0"]');
-      const bar = document.querySelector('polymorph-collapse, polymorph-card');
-      return { text: el?.querySelector('.txt')?.textContent, barHtml: bar?.shadowRoot?.innerHTML?.slice(0, 220) };
-    });
-    await page.evaluate(() => {
-      const el = document.querySelector('[data-qa="post-0"] .txt');
-      if (el) el.textContent = el.textContent; // same text, fresh mutation
-    });
-    await page.waitForTimeout(1200);
-    const after = await page.evaluate(() => {
-      const bar = document.querySelector('polymorph-collapse, polymorph-card');
-      return bar?.shadowRoot?.innerHTML?.slice(0, 220);
-    });
-    soft('stable selection across rerender', target.barHtml === after, 'bar html changed');
-    const cardRows = await contrastAudit(page, [
-      'polymorph-card >>> .caption',
-      'polymorph-card >>> .meta',
-      'polymorph-card >>> .show',
-    ]);
-    auditContrast(cardRows, 'card');
+  await scenario('media-empty-collapse', async () => {
+    const c = await launch({ profileSuffix: '-media-empty' });
+    try {
+      const id = await extensionId(c);
+      await configure(c, id, {});
+      await clearMedia(c, id);
+      const page = await c.newPage();
+      await page.goto(`https://x.com:${port}/feed?tag=SCENMEDIA1`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
+      await waitBars(page, 1);
+      const cards = await cardMedia(page);
+      check('empty library still transforms matched posts', cards.length >= 1, `${cards.length} cards`);
+      check('empty library cards have no image', cards.every((card) => card.src === null), JSON.stringify(cards.map((card) => card.src)));
+      check('empty library cards keep Show original', cards.every((card) => card.hasShow), 'missing restore');
+      const emptyText = await extPage(c, id, 'options.html').then((pg) => pg.locator('.media-empty').innerText());
+      check(
+        'options shows the exact empty-state copy',
+        emptyText.includes('Add images or GIFs to replace filtered posts. Without images, posts are collapsed.'),
+        emptyText,
+      );
+    } finally {
+      await c.close();
+    }
+  });
+
+  await scenario('media-add-and-render', async () => {
+    const suffix = '-media-add';
+    let c = await launch({ profileSuffix: suffix });
+    try {
+      let id = await extensionId(c);
+      await configure(c, id, {});
+      await clearMedia(c, id);
+      const mediaRequests = [];
+      c.on('request', (r) => mediaRequests.push(r.url()));
+      await addMedia(c, id, [FIXTURES.png]);
+      const options = await extPage(c, id, 'options.html');
+      await options.reload();
+      await options.waitForTimeout(500);
+      const listed = await mediaState(c, id);
+      check('added asset is in the library', listed?.ok === true && listed.usage?.count === 1, JSON.stringify(listed?.usage));
+      check('options renders a thumbnail for the asset', (await options.locator('.media-item img').count()) >= 1, 'no thumbnail');
+
+      const page = await c.newPage();
+      await page.goto(`https://x.com:${port}/feed?tag=SCENMEDIA2`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
+      await waitCardImages(page, 1);
+      const cards = await cardMedia(page);
+      const imgCard = cards.find((card) => card.src !== null);
+      check('card renders the user image from a local object URL', imgCard?.src?.startsWith('blob:') === true, imgCard?.src ?? 'no image');
+      check('card image is bounded', (imgCard?.height ?? 0) <= 240, `${imgCard?.height}px`);
+      check('card keeps Show original', imgCard?.hasShow === true, 'missing restore');
+      await shot(page, 'media-add-render');
+
+      // Restart the extension (same profile, same IndexedDB) and confirm persistence.
+      await c.close();
+      c = await launch({ profileSuffix: suffix });
+      id = await extensionId(c);
+      await configure(c, id, {});
+      const afterRestart = await mediaState(c, id);
+      check('library persists across an extension restart', afterRestart?.ok === true && afterRestart.usage?.count === 1, JSON.stringify(afterRestart?.usage));
+      const page2 = await c.newPage();
+      await page2.goto(`https://x.com:${port}/feed?tag=SCENMEDIA2B`);
+      await page2.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page2);
+      await waitCardImages(page2, 1);
+      check('restarted worker still renders the persisted image', (await cardMedia(page2)).some((card) => card.src?.startsWith('blob:')), 'no blob image after restart');
+      const external = mediaRequests.filter((url) => !isAllowedRequest(url));
+      check('media rendering made no external asset requests', external.length === 0, external.slice(0, 3).join(', '));
+    } finally {
+      await c.close().catch(() => {});
+    }
+  });
+
+  await scenario('media-multiple-stable', async () => {
+    const c = await launch({ profileSuffix: '-media-multi' });
+    try {
+      const id = await extensionId(c);
+      await configure(c, id, {});
+      await clearMedia(c, id);
+      await addMedia(c, id, [FIXTURES.png, FIXTURES.png2, FIXTURES.png3]);
+      const listed = await mediaState(c, id);
+      check('three assets are listed', listed?.ok === true && listed.usage?.count === 3, JSON.stringify(listed?.usage));
+
+      const page = await c.newPage();
+      await page.goto(`https://x.com:${port}/feed?tag=SCENMEDIA3`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
+      await waitStableBars(page);
+      await waitCardImages(page, 1);
+      await page.waitForTimeout(500);
+      const cards = await cardMedia(page);
+      const sources = new Set(cards.map((card) => card.src).filter((src) => src !== null));
+      soft('cards draw from more than one asset', sources.size >= 2, `${sources.size} distinct of ${cards.length} cards`);
+      const before = await page.evaluate(() => document.querySelector('polymorph-card')?.shadowRoot?.querySelector('img')?.getAttribute('src') ?? null);
+      await page.evaluate(() => {
+        const el = document.querySelector('[data-qa="post-0"] .txt');
+        if (el) el.textContent = el.textContent; // same text, fresh mutation
+      });
+      await page.waitForTimeout(1200);
+      const after = await page.evaluate(() => document.querySelector('polymorph-card')?.shadowRoot?.querySelector('img')?.getAttribute('src') ?? null);
+      check('same post keeps the same asset across rerenders', before !== null && before === after, `${before} -> ${after}`);
+      await shot(page, 'media-multiple');
+    } finally {
+      await c.close();
+    }
+  });
+
+  await scenario('media-remove-and-reject', async () => {
+    const c = await launch({ profileSuffix: '-media-remove' });
+    try {
+      const id = await extensionId(c);
+      await configure(c, id, {});
+      await clearMedia(c, id);
+      await addMedia(c, id, [FIXTURES.png]);
+      const options = await extPage(c, id, 'options.html');
+      await options.reload();
+      await options.waitForTimeout(500);
+      await options.locator('.media-remove').first().click();
+      await options.waitForTimeout(700);
+      const empty = await options.locator('.media-empty').innerText();
+      check('removing the final item returns to the empty state', empty.includes('Without images, posts are collapsed.'), empty);
+
+      await options.setInputFiles('#media-input', [FIXTURES.corruptPng, FIXTURES.svg]);
+      await options.waitForTimeout(1000);
+      const statusText = await options.locator('.media-status').innerText();
+      check('corrupt file rejected with visible feedback', /corrupt|decoded/i.test(statusText), statusText);
+      check('SVG rejected with visible feedback', /unsupported format|svg/i.test(statusText), statusText);
+      const afterReject = await mediaState(c, id);
+      check('rejected files never enter the library', afterReject?.usage?.count === 0, JSON.stringify(afterReject?.usage));
+
+      const page = await c.newPage();
+      await page.goto(`https://x.com:${port}/feed?tag=SCENMEDIA4`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
+      await waitBars(page, 1);
+      const cards = await cardMedia(page);
+      check('rejected bytes never render in a card', cards.every((card) => card.src === null), JSON.stringify(cards.map((card) => card.src)));
+    } finally {
+      await c.close();
+    }
+  });
+
+  await scenario('media-no-external-requests', async () => {
+    const c = await launch({ profileSuffix: '-media-net' });
+    try {
+      const id = await extensionId(c);
+      await configure(c, id, {});
+      await clearMedia(c, id);
+      await addMedia(c, id, [FIXTURES.png]);
+      const mediaRequests = [];
+      c.on('request', (r) => mediaRequests.push(r.url()));
+      const page = await c.newPage();
+      await page.goto(`https://x.com:${port}/feed?tag=SCENMEDIA5`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
+      await waitCardImages(page, 1);
+      const bad = mediaRequests.filter(
+        (url) => !isAllowedRequest(url) || /fixture[^/]*\.(png|gif|svg)/i.test(url),
+      );
+      check('no external or fixture-hosted asset requests while media renders', bad.length === 0, bad.slice(0, 5).join(', '));
+      const sources = await page.evaluate(() =>
+        [...document.querySelectorAll('polymorph-card')]
+          .map((card) => card.shadowRoot?.querySelector('img')?.getAttribute('src'))
+          .filter((src) => typeof src === 'string'),
+      );
+      check(
+        'every card image is a local object or data URL',
+        sources.length >= 1 && sources.every((src) => src?.startsWith('blob:') || src?.startsWith('data:')),
+        JSON.stringify(sources),
+      );
+    } finally {
+      await c.close();
+    }
   });
 
   await scenario('reduced-motion', async () => {
-    await configure(ctx, extId, {});
-    const page = await openFixture(ctx, `https://x.com:${port}/feed?tag=SCEN10`);
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await waitBars(page, 1);
-    const bars = await barInfo(page);
-    const running = bars.flatMap((b) => b.animations).filter((a) => a.state === 'running' && parseFloat(a.duration) > 0);
-    check('no running animations under reduced motion', running.length === 0, JSON.stringify(running));
-    const rmFlag = await page.evaluate(() => [...document.querySelectorAll('polymorph-card')].every((el) => el.getAttribute('data-reduced-motion') === 'true'));
-    soft('cards flag reduced motion', rmFlag, 'data-reduced-motion not true');
-    await shot(page, 'reduced-motion-feed');
+    const c = await launch({ profileSuffix: '-reduced' });
+    try {
+      const id = await extensionId(c);
+      await configure(c, id, {});
+      await clearMedia(c, id);
+      await addMedia(c, id, [FIXTURES.gif]);
+      const page = await c.newPage();
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.goto(`https://x.com:${port}/feed?tag=SCEN10`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
+      await waitBars(page, 1);
+      await page.waitForTimeout(900);
+      const animatedGifs = await page.evaluate(
+        () => document.querySelectorAll('polymorph-card img[data-media-mime="image/gif"]').length,
+      );
+      check('reduced motion never renders an animating GIF', animatedGifs === 0, String(animatedGifs));
+      const cards = await cardMedia(page);
+      const frozen = cards.filter((card) => card.frozen === 'true').length;
+      const collapsed = cards.filter((card) => card.src === null).length;
+      soft('reduced motion freezes the GIF or collapses it', frozen + collapsed >= 1, JSON.stringify({ frozen, collapsed }));
+      const bars = await barInfo(page);
+      const running = bars.flatMap((b) => b.animations).filter((a) => a.state === 'running' && parseFloat(a.duration) > 0);
+      check('no running animations under reduced motion', running.length === 0, JSON.stringify(running));
+      const rmFlag = await page.evaluate(() =>
+        [...document.querySelectorAll('polymorph-card')].every((el) => el.getAttribute('data-reduced-motion') === 'true'),
+      );
+      soft('cards flag reduced motion', rmFlag, 'data-reduced-motion not true');
+      await shot(page, 'reduced-motion-feed');
+    } finally {
+      await c.close();
+    }
   });
 
   await scenario('popup-states', async () => {
@@ -788,7 +1058,8 @@ try {
     soft('key shown as saved', /saved|present|ok/i.test(text), text.slice(0, 200));
     soft('enable rule affordance', /enable rule/i.test(text), 'no explicit enable label');
     soft('active/off status chip', /active|off\b/i.test(text), 'no status chip');
-    soft('replacement mix chooser', /mix|replacement|cute|meme|motiv/i.test(text), 'no mix chooser');
+    soft('replacement media section present', /replacement media/i.test(text), 'no media section');
+    soft('media empty-state copy visible', /add images or gifs/i.test(text), 'no media copy');
     soft('diagnostics section', /diagnostic/i.test(text), 'no diagnostics');
     soft('test connection affordance', /test connection/i.test(text), 'no test button');
     const lightRows = await contrastAudit(options, [
@@ -813,54 +1084,11 @@ try {
     soft('diagnostics counters visible', hasCounters, text.slice(0, 300));
     check('diagnostics never show the key value', !text.includes(KEY), 'KEY LEAKED');
     check('diagnostics never show post text', !text.includes('FIXTURE_'), 'post text leaked');
-  });
-
-  await scenario('gallery-render', async () => {
-    const { readdirSync: rd } = await import('node:fs');
-    const libDir = join(DIST, 'assets', 'replacements');
-    const files = existsSync(libDir) ? rd(libDir).filter((f) => f.endsWith('.svg')) : [];
-    soft('replacement library has >=12 assets', files.length >= 12, `${files.length} assets`);
-    const manifestFile = join(libDir, 'manifest.json');
-    if (existsSync(manifestFile)) {
-      const libManifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
-      const entries = Array.isArray(libManifest) ? libManifest : libManifest.items ?? libManifest.assets ?? [];
-      const categories = new Set(entries.map((e) => e.category));
-      soft('library has >=3 categories', categories.size >= 3, [...categories].join(','));
-      soft('library entries carry license metadata', entries.length > 0 && entries.every((e) => typeof e.license === 'string' && e.license.length > 0 && (typeof e.author === 'string' || typeof e.source === 'string')), 'missing license/author');
-      soft('library has animated + static motion mix', new Set(entries.map((e) => e.motion)).size >= 1, JSON.stringify([...new Set(entries.map((e) => e.motion))]));
-    } else {
-      soft('library manifest present', false, 'no assets/replacements/manifest.json');
-    }
-    const cards = files.map((f, i) => `
-      <figure style="margin:0;border:1px solid #dcd9d2;border-radius:10px;background:#fff;padding:10px;max-width:480px">
-        <img src="https://x.com:${port}/dist/assets/replacements/${f}" alt="" style="display:block;max-height:110px;margin:0 auto">
-        <figcaption style="font:12px system-ui;color:#555;margin-top:6px">${f} — hidden by rule “Rage bait”</figcaption>
-      </figure>`).join('');
-    const iconDir = join(DIST, 'icons');
-    const iconFiles = existsSync(iconDir) ? rd(iconDir).filter((f) => f.endsWith('.png')).sort() : [];
-    const icons = iconFiles.map((f) => `<span style="display:inline-flex;flex-direction:column;align-items:center;gap:6px;margin:8px;font:11px system-ui">
-      <img src="https://x.com:${port}/dist/icons/${f}" alt="" style="width:${parseInt(f.match(/(\d+)/)?.[1] ?? '16', 10)}px;height:auto">
-      <img src="https://x.com:${port}/dist/icons/${f}" alt="" style="width:64px;height:auto;image-rendering:pixelated">
-      ${f}</span>`).join('');
-    const galleryPage = await ctx.newPage();
-    scenarioPages.add(galleryPage);
-    await galleryPage.goto(`https://x.com:${port}/dist/`, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    await galleryPage.setContent(`<!doctype html><html><body style="font:14px system-ui;background:#f4f2ee;padding:20px">
-      <h2>Replacement library (${files.length} assets)</h2><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${cards}</div>
-      <h2>Toolbar icons at real + zoomed size</h2><div>${icons}</div></body></html>`);
-    await galleryPage.waitForTimeout(800);
-    await shot(galleryPage, 'gallery-library-and-icons', { fullPage: true });
+    check('diagnostics never show media file names', !/fixture[-_a-z0-9]*\.(png|gif|jpe?g|webp)/i.test(text), 'media file name leaked');
   });
 
   await scenario('no-external-requests', async () => {
-    const allowed = new Set(['x.com', 'www.x.com', 'twitter.com', 'reddit.com', 'www.reddit.com', 'news.ycombinator.com', 'youtube.com', 'gmail.com', 'mail.google.com', 'fixture.test', 'openrouter.ai']);
-    const bad = requests.filter((r) => {
-      if (r.url.startsWith('chrome-extension://') || r.url.startsWith('data:') || r.url.startsWith('blob:') || r.url.startsWith('about:') || r.url.startsWith('devtools://')) return false;
-      try {
-        const u = new URL(r.url);
-        return !allowed.has(u.hostname);
-      } catch { return true; }
-    });
+    const bad = requests.filter((r) => !isAllowedRequest(r.url));
     check('no unexpected external requests', bad.length === 0, bad.slice(0, 5).map((r) => r.url).join(', '));
   });
 
@@ -928,21 +1156,32 @@ try {
       provider.reset(); provider.setMode('429');
       const page = await c.newPage();
       await page.goto(`https://x.com:${port}/feed?tag=SCEN8B`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
       await page.waitForTimeout(2500);
       const bars = await barInfo(page);
       check('429 leaves posts visible', bars.length === 0, `${bars.length} bars`);
       // Poll for the pause: under a loaded suite the first calls can take a
       // beat, but a 429 storm must end paused.
       let diag = null;
-      for (let i = 0; i < 8; i += 1) {
+      for (let i = 0; i < 20; i += 1) {
         diag = await extPage(c, id, 'options.html').then((pg) => pg.evaluate(async () => chrome.runtime.sendMessage({ type: 'getDiagnostics' })));
         if (diag?.paused === true) break;
-        await page.waitForTimeout(750);
+        await page.waitForTimeout(1000);
       }
+      const failureDom = await page
+        .evaluate(() => ({
+          state: document.readyState,
+          articles: document.querySelectorAll('article').length,
+          marks: document.querySelectorAll('[data-polymorph-state]').length,
+          cards: document.querySelectorAll('polymorph-card').length,
+          injected: document.documentElement.hasAttribute('data-polymorph-extension'),
+        }))
+        .catch(() => ({}));
       check(
         'diagnostics show the provider pause after 429',
         diag?.paused === true,
-        `paused=${diag?.paused} calls=${provider.count()} bars=${bars.length} totals=${JSON.stringify(diag?.totals)}`,
+        `paused=${diag?.paused} calls=${provider.count()} bars=${bars.length} totals=${JSON.stringify(diag?.totals)} dom=${JSON.stringify(failureDom)}`,
       );
     } finally {
       provider.setMode('ok');
@@ -958,6 +1197,8 @@ try {
       provider.reset(); provider.setMode('offline');
       const page = await c.newPage();
       await page.goto(`https://x.com:${port}/feed?tag=SCEN8C`);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForContent(page);
       await page.waitForTimeout(2500);
       const bars = await barInfo(page);
       check('network failure leaves posts visible', bars.length === 0, `${bars.length} bars`);
@@ -976,14 +1217,28 @@ try {
         provider.reset(); provider.setMode('429');
         const first = await c.newPage();
         await first.goto(`https://x.com:${port}/feed?tag=SCEN13`);
-        await first.waitForTimeout(2500);
+        await first.reload({ waitUntil: 'domcontentloaded' });
+        // Cold-start hardening: many contexts have been created by now, so
+        // wait for the content script to touch the DOM before judging state.
+        await first
+          .waitForFunction(() => document.querySelectorAll('[data-polymorph-state]').length > 0, null, { timeout: 30000, polling: 100 })
+          .catch(() => {});
+        await first.waitForTimeout(1500);
         let during = null;
-        for (let i = 0; i < 8; i += 1) {
+        for (let i = 0; i < 24; i += 1) {
           during = await extPage(c, id, 'options.html').then((pg) => pg.evaluate(async () => chrome.runtime.sendMessage({ type: 'getDiagnostics' })));
           if (during?.paused === true) break;
-          await first.waitForTimeout(750);
+          await first.waitForTimeout(1000);
         }
-        check('recovery: paused after the 429 storm', during?.paused === true, `paused=${during?.paused} calls=${provider.count()} totals=${JSON.stringify(during?.totals)}`);
+        const domState = await first.evaluate(() => ({
+          articles: document.querySelectorAll('article').length,
+          marked: document.querySelectorAll('[data-polymorph-state]').length,
+        })).catch(() => ({}));
+        check(
+          'recovery: paused after the 429 storm',
+          during?.paused === true,
+          `paused=${during?.paused} calls=${provider.count()} totals=${JSON.stringify(during?.totals)} dom=${JSON.stringify(domState)}`,
+        );
         provider.setMode('ok');
         let resumed = false;
         for (let i = 0; i < 40; i += 1) {
@@ -994,6 +1249,7 @@ try {
         check('recovery: pause expires without any reset', resumed === true, `still paused after 80s`);
         const second = await c.newPage();
         await second.goto(`https://x.com:${port}/feed?tag=SCEN13B`);
+        await waitForContent(second);
         await waitBars(second, 1, 15000);
         const bars = await barInfo(second);
         check('recovery: posts transform again after the pause', bars.length >= 1, `${bars.length} bars`);

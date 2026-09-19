@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="motivational line">
-  <title>You can close this tab</title>
-  <rect x="4" y="4" width="152" height="112" rx="14" fill="#f4efe6" stroke="#8a6f45" stroke-width="2" />
-  <rect x="48" y="26" width="64" height="44" rx="8" fill="#ffffff" stroke="#8a6f45" stroke-width="2" />
-  <path d="M60 38 H100 M60 48 H88" stroke="#c9b48c" stroke-width="3" stroke-linecap="round" />
-  <path d="M104 58 L120 74 M120 58 L104 74" stroke="#b3553f" stroke-width="4" stroke-linecap="round" />
-  <rect x="42" y="80" width="76" height="22" rx="11" fill="#8a6f45" />
-  <text x="80" y="95" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#f4efe6">CLOSE IT</text>
-</svg>

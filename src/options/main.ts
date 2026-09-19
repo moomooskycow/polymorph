@@ -1,10 +1,10 @@
 import { HARD_DENYLIST, normalizeHost } from '../hosts';
 import { formatDiagnostics, lastActivityAt, type DiagnosticsSnapshot } from '../diagnostics';
-import { assetsByCategory, type ReplacementAsset } from '../replacements/library';
-import { svgElement } from '../replacements/svg';
+import { bytesToBase64 } from '../media/bytes';
+import { emptyUsage, MEDIA_EMPTY_COPY, type MediaAssetMeta, type MediaUsage } from '../media/types';
 import { loadSettings, sanitizeRules, saveSettings } from '../settings';
 import { el, section, switchControl } from '../ui/dom';
-import type { Face, ReplacementMix, Rule } from '../types';
+import type { Rule } from '../types';
 
 function requireApp(): HTMLElement {
   const node = document.getElementById('app');
@@ -22,25 +22,13 @@ async function send<T>(message: unknown): Promise<T | null> {
   }
 }
 
-const MIXES: { value: ReplacementMix; label: string; hint: string }[] = [
-  { value: 'mixed', label: 'Mixed', hint: 'Cute, meme, and motivation together. Default.' },
-  { value: 'cute', label: 'Cute only', hint: 'Kittens, pups, ducks, and otters.' },
-  { value: 'meme', label: 'Meme only', hint: 'Original comic faces, shrugs, and tiny panic.' },
-  { value: 'motivation', label: 'Motivation only', hint: 'Short original lines of encouragement.' },
-  {
-    value: 'collapse',
-    label: 'Collapse only',
-    hint: 'No art: a one-line card with a Show original button.',
-  },
-];
-
-const FACES: { value: Face; label: string }[] = [
-  { value: 'inherit', label: 'Use global mix' },
-  { value: 'collapse', label: 'Collapse only' },
-  { value: 'cute', label: 'Cute' },
-  { value: 'meme', label: 'Meme' },
-  { value: 'motivation', label: 'Motivation' },
-];
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 10) return `${Math.round(mb)} MB`;
+  if (mb >= 1) return `${mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 
 function statusLine(className = 'status'): HTMLParagraphElement {
   return el('p', className);
@@ -105,7 +93,6 @@ function keySection(hasKey: boolean): HTMLElement {
     status.textContent = 'Key cleared.';
   });
 
-  // US-005 / US-007: one bounded real call with fixed synthetic text.
   const test = el('button', undefined, 'Test connection');
   test.addEventListener('click', async () => {
     test.disabled = true;
@@ -137,59 +124,150 @@ function keySection(hasKey: boolean): HTMLElement {
   return node;
 }
 
-/* ------------------------------------------------------------------ mix */
+/* -------------------------------------------------------- replacement media */
 
-function previewThumb(asset: ReplacementAsset): HTMLElement {
-  const thumb = el('div', 'preview-thumb');
-  thumb.setAttribute('data-reduced-motion', String(window.matchMedia('(prefers-reduced-motion: reduce)').matches));
-  const svg = svgElement(asset.svg);
-  if (svg !== null) thumb.append(svg);
-  thumb.title = asset.caption;
-  return thumb;
+interface MediaListReply {
+  ok: boolean;
+  assets?: MediaAssetMeta[];
+  usage?: MediaUsage;
 }
 
-function collapsePreview(): HTMLElement {
-  const preview = el('div', 'preview-thumb preview-thumb--plain');
-  preview.append(el('span', undefined, 'Hidden by rule “Rage bait”'));
-  preview.append(el('span', 'preview-restore', 'Show original'));
-  return preview;
+interface MediaAddReply {
+  ok: boolean;
+  message?: string;
+  usage?: MediaUsage;
 }
 
-function mixSection(current: ReplacementMix): HTMLElement {
-  const node = section('Replacement mix');
+interface MediaRemoveReply {
+  ok: boolean;
+  removed?: boolean;
+  usage?: MediaUsage;
+}
+
+function mediaSection(): HTMLElement {
+  const node = section('Replacement media', 'media');
   node.append(
-    el('p', 'muted', 'What a matched post becomes. Individual rules can override this.'),
+    el(
+      'p',
+      'muted',
+      'Matched posts show one of your images or GIFs. Local files only — nothing is uploaded, and media is never sent to Jev.',
+    ),
   );
-  const group = el('div', 'mixes');
-  for (const mix of MIXES) {
-    const label = el('label', 'mix');
-    const input = el('input');
-    input.type = 'radio';
-    input.name = 'replacement-mix';
-    input.value = mix.value;
-    input.checked = current === mix.value;
-    input.addEventListener('change', () => {
-      if (!input.checked) return;
-      void saveSettings({ replacementMix: mix.value });
-    });
-    const body = el('span', 'mix-body');
-    body.append(el('strong', undefined, mix.label), el('span', 'muted', mix.hint));
-    const preview = el('span', 'previews');
-    if (mix.value === 'collapse') {
-      preview.append(collapsePreview());
+
+  const usageLine = el('p', 'media-usage');
+  const empty = el('p', 'muted media-empty', MEDIA_EMPTY_COPY);
+  const statusBox = el('div', 'media-status');
+  const grid = el('div', 'media-grid');
+
+  const input = el('input');
+  input.type = 'file';
+  input.id = 'media-input';
+  input.multiple = true;
+  input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+  input.hidden = true;
+
+  const addButton = el('button', 'primary', 'Add images or GIFs');
+  addButton.addEventListener('click', () => input.click());
+
+  const writeStatus = (message: string, bad = false): void => {
+    statusBox.append(el('p', bad ? 'status status--bad' : 'status status--ok', message));
+    while (statusBox.children.length > 6) statusBox.firstElementChild?.remove();
+  };
+
+  let usage: MediaUsage = emptyUsage();
+  const renderUsage = (next: MediaUsage): void => {
+    usage = next;
+    usageLine.textContent = `${next.count} image${next.count === 1 ? '' : 's'} · ${formatBytes(next.totalBytes)} of ${formatBytes(next.maxTotalBytes)}`;
+    empty.hidden = next.count > 0;
+  };
+
+  const mediaItem = (asset: MediaAssetMeta): HTMLElement => {
+    const figure = el('figure', 'media-item');
+    figure.dataset.mediaId = asset.id;
+    const thumb = el('div', 'media-thumb');
+    if (asset.thumb !== null) {
+      const image = el('img');
+      image.src = asset.thumb;
+      image.alt = '';
+      thumb.append(image);
     } else {
-      const categories =
-        mix.value === 'mixed' ? (['cute', 'meme', 'motivation'] as const) : ([mix.value] as const);
-      for (const category of categories) {
-        for (const asset of assetsByCategory(category).slice(0, 2)) {
-          preview.append(previewThumb(asset));
-        }
+      thumb.append(el('span', 'muted', 'no preview'));
+    }
+    const meta = el('figcaption', 'media-meta');
+    meta.append(el('span', undefined, `${asset.kind.toUpperCase()} · ${formatBytes(asset.size)}`));
+    const remove = el('button', 'danger-button media-remove', 'Remove');
+    remove.addEventListener('click', async () => {
+      const reply = await send<MediaRemoveReply>({ type: 'media:remove', id: asset.id });
+      if (reply !== null && reply.ok) {
+        writeStatus(`Removed one ${asset.kind.toUpperCase()} file.`);
+        await renderList();
+      } else {
+        writeStatus('Could not remove that item.', true);
+      }
+    });
+    figure.append(thumb, meta, remove);
+    return figure;
+  };
+
+  const renderList = async (): Promise<void> => {
+    const reply = await send<MediaListReply>({ type: 'media:list' });
+    if (reply === null || reply.ok !== true || reply.assets === undefined || reply.usage === undefined) {
+      renderUsage(emptyUsage());
+      grid.replaceChildren();
+      writeStatus('The media library is unavailable in this browser session.', true);
+      return;
+    }
+    renderUsage(reply.usage);
+    grid.replaceChildren();
+    for (const asset of reply.assets) grid.append(mediaItem(asset));
+  };
+
+  input.addEventListener('change', async () => {
+    const files = [...(input.files ?? [])];
+    input.value = '';
+    if (files.length === 0) return;
+    for (const file of files) {
+      if (file.size === 0) {
+        writeStatus(`${file.name}: the file is empty.`, true);
+        continue;
+      }
+      if (file.size > usage.maxFileBytes) {
+        writeStatus(
+          `${file.name}: too large; the limit is ${formatBytes(usage.maxFileBytes)} per file.`,
+          true,
+        );
+        continue;
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await file.arrayBuffer());
+      } catch {
+        writeStatus(`${file.name}: the file could not be read.`, true);
+        continue;
+      }
+      const reply = await send<MediaAddReply>({
+        type: 'media:add',
+        mime: file.type || 'application/octet-stream',
+        base64: bytesToBase64(bytes),
+      });
+      if (reply === null) {
+        writeStatus(`${file.name}: no response from the extension.`, true);
+        continue;
+      }
+      if (reply.ok) {
+        writeStatus(`${file.name}: added.`);
+      } else {
+        writeStatus(`${file.name}: ${reply.message ?? 'rejected.'}`, true);
       }
     }
-    label.append(input, body, preview);
-    group.append(label);
-  }
-  node.append(group, el('p', 'muted', 'Changes save immediately.'));
+    await renderList();
+  });
+
+  const toolbar = el('div', 'toolbar');
+  toolbar.append(addButton);
+
+  node.append(input, toolbar, usageLine, empty, statusBox, grid);
+  void renderList();
   return node;
 }
 
@@ -232,21 +310,7 @@ function ruleEditor(
   instructions.value = rule?.instructions ?? '';
   instructions.addEventListener('input', () => handlers.onDirty());
   instructionsLabel.append(instructions);
-
-  const faceLabel = el('label');
-  faceLabel.append(el('span', 'field-label', 'Replacement for this rule'));
-  const face = el('select');
-  for (const option of FACES) {
-    const item = el('option');
-    item.value = option.value;
-    item.textContent = option.label;
-    face.append(item);
-  }
-  face.value = rule?.face ?? 'inherit';
-  face.addEventListener('change', () => handlers.onDirty());
-  faceLabel.append(face);
-
-  grid.append(instructionsLabel, faceLabel);
+  grid.append(instructionsLabel);
   article.append(head, grid);
 
   const updateChip = (): void => {
@@ -280,14 +344,10 @@ function readRule(article: HTMLElement, taken: Set<string>): Rule | null {
   if (name === '' && instructions === '') return null;
   const enabled =
     article.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked ?? false;
-  const faceValue = article.querySelector<HTMLSelectElement>('select')?.value;
-  const face = FACES.some((option) => option.value === faceValue)
-    ? (faceValue as Face)
-    : 'inherit';
   const id = article.dataset.ruleId ?? slugify(name, taken);
   taken.add(id);
   article.dataset.ruleId = id;
-  return { id, name: name || id, instructions, enabled, face };
+  return { id, name: name || id, instructions, enabled };
 }
 
 function collectRules(list: HTMLElement): Rule[] {
@@ -426,8 +486,8 @@ function privacySection(): HTMLElement {
   for (const line of [
     'One post is sent per Jev request. Author names, HTML, cookies, and page chrome are never sent.',
     'The OpenRouter key stays in extension storage and goes only to openrouter.ai from the background worker.',
+    'Your replacement images and GIFs stay on this machine. They are never uploaded and never sent to Jev.',
     'If Jev is down or unsure, the post stays visible. Nothing is ever deleted.',
-    'Replacement art is bundled with the extension. No image CDN, no trackers, no new services.',
   ]) {
     list.append(el('li', undefined, line));
   }
@@ -569,7 +629,7 @@ async function render(): Promise<void> {
   const setup = setupSection(keyState.hasKey && enabled > 0);
   if (setup !== null) app.append(setup);
   app.append(keySection(keyState.hasKey));
-  app.append(mixSection(settings.replacementMix));
+  app.append(mediaSection());
   app.append(rulesSection(settings.rules));
   app.append(allowlistSection(settings.allowlist));
   app.append(privacySection());

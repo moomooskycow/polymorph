@@ -97,3 +97,50 @@ mechanics, not intent.
   `pnpm build`; manifest icons and page favicons use those PNGs.
 - No new permissions, no new runtime dependencies, key storage and the hard
   denylist are unchanged.
+
+## v3 addendum (2026-09-19, US-013/US-014): user media replaces bundled art
+
+The locked decisions still hold: key handling, denylist, one-post Jev state,
+gate, fail-open, no new permissions. These notes record the replacement-media
+pivot.
+
+- **Removed**: `assets/replacements/**` (14 SVGs + manifest + README),
+  `src/replacements/**`, the mix/category/face types and UI, and the
+  `web_accessible_resources` entry that existed only for bundled art. Branding
+  (`assets/icons/polymorph.svg`, generated PNGs, manifest icons, favicons) is
+  unchanged. `verify-dist.mjs` now fails if `dist/assets/replacements` exists.
+- **Storage**: `src/media/store.ts` — IndexedDB `polymorph-media` / object
+  store `assets`, one record per file `{id, kind, mime, size, addedAt, width,
+  height, thumb, blob}`. `chrome.storage.local` keeps only lightweight
+  settings; no blobs or base64 there. `MemoryMediaStore` shares a backing Map
+  so unit tests can model an extension restart.
+- **Validation**: `src/media/validate.ts` sniffs PNG/JPEG/GIF(87a|89a)/WebP
+  magic bytes and rejects everything else (SVG/HTML included). Caps: 5 MB per
+  file, 200 files, 100 MB total. The worker additionally decodes with
+  `createImageBitmap` (corrupt/truncated rejection) and derives dimensions plus
+  a small WebP/PNG thumbnail via `OffscreenCanvas` (`src/media/browser.ts`).
+  IndexedDB `QuotaExceededError` maps to a clear `quota_exceeded` message.
+- **Transport**: extension messaging JSON-serializes, so bytes cross contexts
+  as base64 (`src/media/bytes.ts`), bounded by the per-file cap. The content
+  script turns them into a local `blob:` URL (LRU-cached per page, revoked on
+  eviction/pagehide). No media is ever written into page storage, settings, or
+  a Jev request.
+- **Selection**: `src/media/selection.ts` orders the pile by `addedAt` + id and
+  draws `stableIndex(hash(signature + "\u0000" + ruleId))`, skipping the last 8
+  picks when possible. The background owns the draw; the content script sends
+  its recent list and caches the returned asset by id.
+- **Card**: `src/card.ts` renders a bounded `<img>` (max 480px wide, art area
+  ≤120px) or the compact collapse card when the draw is empty. Captions are
+  generic ("Your image/GIF replaces this post"), never file names. GIFs under
+  `prefers-reduced-motion` are drawn to a first-frame PNG via canvas; if that
+  fails the post collapses rather than animating.
+- **Library changes while a page is open**: the worker broadcasts
+  `mediaChanged` after add/remove/clear; content re-draws existing cards (and
+  collapses them if the library became empty). `settingsChanged` keeps its v2
+  behavior.
+- **Migration**: stored rules keep working; legacy `face`/`kitten`/
+  `replacementMix` fields are dropped by `sanitizeRules`/`mergeSettings`
+  without changing any `enabled` flag.
+- **Diagnostics**: transformed events keep an opaque `assetId`; file names,
+  paths, and bytes are never recorded. QA additionally asserts no fixture file
+  names appear anywhere in the diagnostics text.

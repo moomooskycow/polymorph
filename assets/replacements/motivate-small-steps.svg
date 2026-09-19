@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="motivational line">
-  <title>Small steps still move the line</title>
-  <rect x="4" y="4" width="152" height="112" rx="14" fill="#eef3ec" stroke="#2f6f4f" stroke-width="2" />
-  <path d="M16 90 H144" stroke="#cfe0d4" stroke-width="2" />
-  <circle cx="24" cy="24" r="5" fill="#e8a25c" />
-  <text x="80" y="52" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="700" fill="#23513a">Small steps</text>
-  <text x="80" y="74" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="700" fill="#23513a">still move the line.</text>
-  <path d="M52 82 Q80 74 108 82" stroke="#2f6f4f" stroke-width="2.5" fill="none" stroke-linecap="round" />
-</svg>

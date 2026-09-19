@@ -1,10 +1,15 @@
-import type { ReplacementAsset } from './replacements/library';
-import { svgElement } from './replacements/svg';
-
 /** Custom element that hosts the replacement card's shadow DOM. */
 export const CARD_TAG = 'polymorph-card';
 /** Marks the table-row wrapper used when a post is a `<tr>` (HN). */
 export const MOUNT_ATTR = 'data-polymorph-mount';
+
+/** What the content script resolved for this card (blob/data URL, no names). */
+export interface CardMedia {
+  url: string;
+  mime: string;
+  /** True when an animated GIF was frozen to a still frame. */
+  frozen: boolean;
+}
 
 const CARD_STYLE = `
 :host {
@@ -31,7 +36,7 @@ const CARD_STYLE = `
   padding: 6px 10px 0;
 }
 .art:empty { display: none; }
-.art svg { display: block; max-height: 100%; max-width: 100%; }
+.art img { display: block; max-height: 100%; max-width: 100%; object-fit: contain; }
 .card.plain .art { display: none; }
 .body { display: flex; align-items: center; gap: 10px; padding: 9px 10px; }
 .text { flex: 1; min-width: 0; }
@@ -49,7 +54,6 @@ const CARD_STYLE = `
 }
 .show:hover { background: rgba(127, 127, 127, 0.15); }
 .show:focus-visible { outline: 2px solid #2f6f4f; outline-offset: 2px; }
-:host([data-reduced-motion="true"]) .art svg * { animation: none !important; }
 @media (prefers-color-scheme: dark) {
   .card { background: #23221f; color: #ece9e2; border-color: #3a3833; }
   .meta { color: #a09c93; }
@@ -60,18 +64,18 @@ const CARD_STYLE = `
 export interface CardView {
   element: HTMLElement;
   showOriginal: HTMLButtonElement;
-  setAsset(asset: ReplacementAsset | null): void;
+  setMedia(media: CardMedia | null): void;
   setReducedMotion(reduced: boolean): void;
 }
 
 /**
- * US-008: bounded transformation card. The art area is reserved at 104px so
- * swapping art cannot shift the feed, and `collapse` mix renders a compact
- * one-line card instead.
+ * US-014: bounded replacement card. With user media it draws a height-capped
+ * image; with an empty library it is the compact collapse card. No filenames
+ * or sizes are rendered into the page.
  */
 export function buildCard(options: {
   ruleName: string;
-  asset: ReplacementAsset | null;
+  media: CardMedia | null;
   reducedMotion?: boolean;
 }): CardView {
   const element = document.createElement(CARD_TAG);
@@ -106,30 +110,42 @@ export function buildCard(options: {
   card.append(art, body);
   shadow.append(style, card);
 
-  const setAsset = (asset: ReplacementAsset | null): void => {
+  const setMedia = (media: CardMedia | null): void => {
     art.replaceChildren();
-    if (asset === null) {
+    if (media === null) {
       card.classList.add('plain');
       caption.textContent = `Hidden by rule “${options.ruleName}”`;
       element.setAttribute('aria-label', `Post hidden by rule ${options.ruleName}`);
       return;
     }
     card.classList.remove('plain');
-    const svg = svgElement(asset.svg);
-    if (svg !== null) art.append(svg);
+    const image = document.createElement('img');
+    image.src = media.url;
+    image.alt = '';
+    image.decoding = 'async';
+    image.setAttribute('data-media-mime', media.mime);
+    image.setAttribute('data-media-frozen', String(media.frozen));
+    art.append(image);
     art.setAttribute('role', 'img');
-    art.setAttribute('aria-label', asset.caption);
-    caption.textContent = asset.caption;
-    element.setAttribute('aria-label', `Post replaced: ${asset.caption} Rule ${options.ruleName}.`);
+    art.setAttribute('aria-label', `Replacement media for the rule ${options.ruleName}`);
+    caption.textContent = media.mime === 'image/gif'
+      ? media.frozen
+        ? 'Your GIF is paused for reduced motion.'
+        : 'Your GIF replaces this post.'
+      : 'Your image replaces this post.';
+    element.setAttribute(
+      'aria-label',
+      `Post replaced with your media by rule ${options.ruleName}.`,
+    );
   };
 
-  setAsset(options.asset);
+  setMedia(options.media);
   element.setAttribute('data-reduced-motion', String(options.reducedMotion === true));
 
   return {
     element,
     showOriginal,
-    setAsset,
+    setMedia,
     setReducedMotion: (reduced: boolean) => {
       element.setAttribute('data-reduced-motion', String(reduced));
     },
