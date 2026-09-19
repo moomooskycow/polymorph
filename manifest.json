@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Polymorph",
+  "version": "0.1.0",
+  "description": "Collapses posts matching rules you wrote in English. Judged one post at a time by Jev.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://openrouter.ai/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Polymorph",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/faces/*.svg"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

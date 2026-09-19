@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="kitten">
+  <title>Polymorph kitten</title>
+  <path d="M13 22 L17 6 L29 15 Z" fill="#9aa3ad" />
+  <path d="M51 22 L47 6 L35 15 Z" fill="#9aa3ad" />
+  <path d="M16 19 L18.6 10 L25.5 16 Z" fill="#e6c7cb" />
+  <path d="M48 19 L45.4 10 L38.5 16 Z" fill="#e6c7cb" />
+  <ellipse cx="32" cy="37" rx="20" ry="19" fill="#b7bec7" />
+  <ellipse cx="24" cy="34" rx="3" ry="3.6" fill="#2b2f36" />
+  <ellipse cx="40" cy="34" rx="3" ry="3.6" fill="#2b2f36" />
+  <circle cx="25" cy="33" r="1" fill="#ffffff" />
+  <circle cx="41" cy="33" r="1" fill="#ffffff" />
+  <path d="M28.5 42 L32 45 L35.5 42" stroke="#2b2f36" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M32 37.5 l-2 2.4 2 1.2 2-1.2 Z" fill="#c96a75" />
+  <path d="M17 40 L6 37.5 M17 44 L6 46" stroke="#2b2f36" stroke-width="1.4" stroke-linecap="round" />
+  <path d="M47 40 L58 37.5 M47 44 L58 46" stroke="#2b2f36" stroke-width="1.4" stroke-linecap="round" />
+</svg>

@@ -14,15 +14,25 @@ Personal daily driver. Load unpacked. Not on the Chrome Web Store.
 4. Turn on at least one rule
 5. Open X, Reddit, HN, or YouTube
 
-Default allowlist is those four. The popup can add the current host.
-Mail, banks, password managers, and localhost never send page text off
-this machine.
+The popup has the master switch and a toggle for the current host. The
+options page writes the key and never reads it back; it also edits rules and
+the allowlist. Default allowlist is those four sites. Mail, banks, password
+managers, and localhost never send page text off this machine.
+
+## Verify
+
+`pnpm test` runs the pure-module suite (hosts, policy, gate, cache, collapse
+markup, faces, adapters). `pnpm verify` checks that `dist/` really contains a
+loadable MV3 extension: manifest, worker, content script, both pages, and the
+bundled faces.
 
 ## Rules
 
 Each rule is a name, an English instruction, on/off, and a face
 (`collapse` / `kitten` / `meme`). Examples ship off. A good rule names
 the exception: "political argument, except election-mechanics explainers."
+Faces are original SVGs bundled in the extension; nothing is fetched from an
+image CDN and no scraped memes are included.
 
 ## Privacy
 
