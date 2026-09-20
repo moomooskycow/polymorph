@@ -20,7 +20,7 @@ import { MediaService } from './media/service';
 import { IdbMediaStore } from './media/store';
 import { emptyUsage } from './media/types';
 import { enabledRules, pickMatch, questionForRule, questionsForRules } from './policy';
-import { ensureDefaults, loadSettings } from './settings';
+import { loadSettings } from './settings';
 import { emptyCounters, type Decision, type EngineState, type Rule, type TabCounters } from './types';
 
 /**
@@ -150,10 +150,6 @@ const OUTCOMES: readonly OutcomeKind[] = [
 ];
 
 const ERROR_KINDS: readonly ErrorKind[] = ['http', 'network', 'timeout', 'parse', 'no_key'];
-
-chrome.runtime.onInstalled.addListener(() => {
-  void ensureDefaults();
-});
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;

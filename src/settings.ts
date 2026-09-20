@@ -66,6 +66,13 @@ function dedupeHosts(input: unknown[]): string[] {
   return [...seen];
 }
 
+/**
+ * US-001 architecture decision: defaults are virtual. `mergeSettings` merges
+ * them into every read; nothing materializes them in storage at install time.
+ * The old install-time writer had a TOCTOU window (read an empty snapshot, an
+ * external write lands, the writer stores defaults and clobbers it). Readers
+ * cannot clobber anything.
+ */
 export async function loadSettings(): Promise<Settings> {
   const raw = await chrome.storage.local.get([...SETTINGS_KEYS]);
   return mergeSettings(raw as Record<string, unknown>);
@@ -73,27 +80,4 @@ export async function loadSettings(): Promise<Settings> {
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {
   await chrome.storage.local.set(patch);
-}
-
-/**
- * US-001 install safety: only fill keys that are genuinely missing. A user (or
- * the QA harness) can write settings while chrome.runtime.onInstalled is still
- * running; those writes must never be clobbered by the defaults.
- */
-export function missingDefaults(raw: Record<string, unknown>): Partial<Settings> {
-  const base = defaultSettings();
-  const patch: Partial<Settings> = {};
-  if (typeof raw.masterEnabled !== 'boolean') patch.masterEnabled = base.masterEnabled;
-  if (!Array.isArray(raw.rules)) patch.rules = base.rules;
-  if (!Array.isArray(raw.allowlist)) patch.allowlist = base.allowlist;
-  return patch;
-}
-
-/** Called on install: materializes defaults so the options page has rows. */
-export async function ensureDefaults(): Promise<Settings> {
-  const raw = await chrome.storage.local.get([...SETTINGS_KEYS]);
-  const loaded = raw as Record<string, unknown>;
-  const patch = missingDefaults(loaded);
-  if (Object.keys(patch).length > 0) await chrome.storage.local.set(patch);
-  return mergeSettings({ ...loaded, ...patch });
 }

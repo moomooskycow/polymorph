@@ -1,6 +1,59 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ALLOWLIST } from './defaults';
-import { defaultSettings, mergeSettings, missingDefaults, sanitizeRules } from './settings';
+import { defaultSettings, loadSettings, mergeSettings, sanitizeRules } from './settings';
+
+const ENABLED_RULES = [
+  { id: 'rage-bait', name: 'Rage bait', instructions: 'Engineered outrage.', enabled: true },
+];
+
+interface FakeStorage {
+  data: Record<string, unknown>;
+  get: ReturnType<typeof vi.fn>;
+  set: ReturnType<typeof vi.fn>;
+  triggerDuringGet(fn: () => void): void;
+}
+
+/**
+ * Models the actual install race: the reader takes an empty snapshot, an
+ * external write lands while the read is in flight, and then the code under
+ * test continues. A reader cannot clobber the external write; the old
+ * install-time writer could (read empty -> external write -> set defaults).
+ */
+function interleavingStorage(): FakeStorage {
+  const data: Record<string, unknown> = {};
+  let duringGet: (() => void) | null = null;
+  return {
+    data,
+    get: vi.fn(async (keys: string[]) => {
+      const snapshot = Object.fromEntries(keys.map((key) => [key, data[key]]));
+      if (duringGet !== null) {
+        const run = duringGet;
+        duringGet = null;
+        run();
+      }
+      return snapshot;
+    }),
+    set: vi.fn(async (patch: Record<string, unknown>) => {
+      Object.assign(data, patch);
+    }),
+    triggerDuringGet: (fn: () => void) => {
+      duringGet = fn;
+    },
+  };
+}
+
+function stubLocalStorage(storage: FakeStorage): void {
+  vi.stubGlobal('chrome', {
+    storage: {
+      local: storage,
+      session: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) },
+    },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('US-001 settings defaults and sanitizing', () => {
   it('US-001 missing storage yields the three disabled examples and the small allowlist', () => {
@@ -80,19 +133,34 @@ describe('US-001 settings defaults and sanitizing', () => {
   });
 
   it('US-001 install defaults never clobber settings written during onInstalled', () => {
-    const configured = {
-      masterEnabled: true,
-      rules: [{ id: 'mine', name: 'Mine', instructions: 'Do it.', enabled: true }],
-      allowlist: ['x.com'],
-    };
-    expect(missingDefaults(configured)).toEqual({});
-    const merged = mergeSettings({ ...configured, ...missingDefaults(configured) });
-    expect(merged.rules).toEqual(configured.rules);
-    expect(merged.allowlist).toEqual(['x.com']);
+    const storage = interleavingStorage();
+    stubLocalStorage(storage);
+    storage.triggerDuringGet(() => {
+      storage.data.rules = ENABLED_RULES;
+      storage.data.masterEnabled = true;
+      storage.data.allowlist = ['x.com'];
+    });
 
-    const partial = missingDefaults({ rules: configured.rules });
-    expect(partial.rules).toBeUndefined();
-    expect(partial.allowlist).toEqual(DEFAULT_ALLOWLIST);
-    expect(partial.masterEnabled).toBe(true);
+    return loadSettings().then(async (settings) => {
+      // The snapshot was empty, so this read returns virtual defaults...
+      expect(settings.rules.every((rule) => rule.enabled === false)).toBe(true);
+      // ...and crucially no write happens, so the external value survives.
+      expect(storage.set).not.toHaveBeenCalled();
+      expect(storage.data.rules).toEqual(ENABLED_RULES);
+      // The next read observes the external write, not defaults.
+      const later = await loadSettings();
+      expect(later.rules).toEqual(ENABLED_RULES);
+      expect(later.allowlist).toEqual(['x.com']);
+    });
+  });
+
+  it('US-001 a truly empty store still yields first-run defaults without writing', async () => {
+    const storage = interleavingStorage();
+    stubLocalStorage(storage);
+    const settings = await loadSettings();
+    expect(settings.rules).toHaveLength(3);
+    expect(settings.rules.every((rule) => rule.enabled === false)).toBe(true);
+    expect(settings.allowlist).toEqual(DEFAULT_ALLOWLIST);
+    expect(storage.set).not.toHaveBeenCalled();
   });
 });
