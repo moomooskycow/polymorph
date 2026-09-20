@@ -9,7 +9,6 @@ const rule: Rule = {
   name: 'Rage bait',
   instructions: 'Engineered outrage.',
   enabled: true,
-  face: 'meme',
 };
 
 describe('US-002 Jev request shape', () => {
@@ -25,7 +24,7 @@ describe('US-002 Jev request shape', () => {
       buildJevBody({
         host: 'x.com',
         text: 'Some post',
-        questions: { 'rage-bait': questionForRule({ ...rule, face: 'meme' }) },
+        questions: { 'rage-bait': questionForRule(rule) },
       }),
     ) as Record<string, unknown>;
     expect(body.model).toBe('typesafe/jev-1.13');

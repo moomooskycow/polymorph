@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Polymorph">
+  <title>Polymorph</title>
+  <!-- Transformation mark: a half-circle on the left, a square on the right. -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#2f6f4f" />
+  <path d="M58 32 A32 32 0 0 0 58 96 Z" fill="#fbfaf7" />
+  <rect x="70" y="32" width="48" height="48" rx="8" fill="#fbfaf7" />
+  <circle cx="103" cy="27" r="10" fill="#e8a25c" stroke="#2f6f4f" stroke-width="5" />
+</svg>

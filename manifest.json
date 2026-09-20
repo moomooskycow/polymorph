@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Polymorph",
-  "version": "0.1.0",
-  "description": "Collapses posts matching rules you wrote in English. Judged one post at a time by Jev.",
+  "version": "0.3.0",
+  "description": "Transforms posts matching rules you wrote in English into welcome replacements judged one post at a time by Jev.",
   "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["https://openrouter.ai/*"],
   "background": {
@@ -12,7 +18,13 @@
   },
   "action": {
     "default_title": "Polymorph",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "options_ui": {
     "page": "options.html",
@@ -24,12 +36,6 @@
       "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": false
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["assets/faces/*.svg"],
-      "matches": ["<all_urls>"]
     }
   ]
 }

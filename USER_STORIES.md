@@ -59,6 +59,8 @@ No-gos: no Sploot, no placekitten, no scraped copyrighted memes.
 
 Evidence: `src/faces.test.ts`, `assets/`
 
+**Superseded (2026-09-19):** bundled face art is removed. Replacement media now comes from the operator's own library (US-013); this story's bundled-kitten/meme intent no longer applies.
+
 ## US-004 Hard denylist never leaves the machine
 
 Statement: When I visit mail, a bank, a password manager, or a local/Hermes
@@ -115,3 +117,205 @@ Criteria:
 No-gos: no fail-closed hiding, no dumping a whole feed into one Jev state.
 
 Evidence: `src/jev/gate.test.ts`, `src/jev/cache.ts`
+
+## US-007 Rule enablement is discoverable
+
+Statement: When I open options for the first time, I want to see why nothing is
+filtered and turn a rule on with an explicit switch, so I do not conclude the
+extension is broken.
+
+Criteria:
+1. WHEN no key is saved or no rule is active, THE SYSTEM SHALL show a first-run
+   block with three numbered steps: add the key, enable a rule, open a
+   supported site.
+2. WHEN a rule is displayed, THE SYSTEM SHALL show an "Enable rule" switch with
+   visible text and an Active/Off chip, not a bare checkbox.
+3. THE SYSTEM SHALL show "N of M rules active" on options and a matching
+   one-line readiness banner in the popup.
+4. WHEN rules are saved, THE SYSTEM SHALL not enable any rule the operator did
+   not switch on.
+
+No-gos: no auto-enabling the examples, no hidden enable control.
+
+Evidence: `src/options/main.ts`, `src/popup/main.ts`, `src/settings.test.ts`
+
+## US-008 Transform a matching post into a replacement card
+
+Statement: When a post matches a rule, I want it turned into something welcome
+with one click back, so filtering feels like transformation, not erasure.
+
+Criteria:
+1. WHEN a match passes the gate, THE SYSTEM SHALL replace the post with a
+   bounded card (max-width 480px, art area at most 120px) that names the rule,
+   shows an accessible caption, and keeps a keyboard-focusable "Show original"
+   control with a visible focus ring.
+2. WHERE the resolved mix is `collapse`, THE SYSTEM SHALL render a one-line
+   card with no art and the same restore control.
+3. WHERE a rule's face is a category, THE SYSTEM SHALL use that mix for that
+   rule only; `inherit` SHALL use the global mix.
+4. WHEN the mix changes while a page is open, THE SYSTEM SHALL redraw existing
+   cards without another Jev call.
+5. WHEN "Show original" is activated, THE SYSTEM SHALL restore the post and
+   SHALL not transform that same content again until reload.
+6. THE SYSTEM SHALL bundle 12-16 original assets with at least four per
+   category, each with caption, author, license, and created date in
+   `assets/replacements/manifest.json`.
+
+No-gos: no deletion, no remote art, no scraped copyrighted memes, no invented
+quote attributions.
+
+Evidence: `src/card.test.ts`, `src/replacements/library.test.ts`,
+`src/replacements/selection.test.ts`
+
+**Superseded (2026-09-19):** the mix chooser and bundled SVG library are removed. A card now shows the operator's imported media, or collapses when the library is empty (US-013/US-014). Criteria 2-4 and 6 are historical.
+
+## US-009 Stable, non-repeating replacement selection with reduced motion
+
+Statement: When a post re-renders, I want the same replacement to stay, and
+when I prefer reduced motion I want still art, so the feed does not flicker or
+move.
+
+Criteria:
+1. WHEN the same normalized text and rule are evaluated again, THE SYSTEM SHALL
+   choose the identical asset.
+2. THE SYSTEM SHALL avoid the last 8 picks on a page when an alternative
+   exists.
+3. WHEN `prefers-reduced-motion: reduce` matches, THE SYSTEM SHALL substitute
+   an animated asset's declared static fallback and freeze animations on the
+   card.
+4. WHEN the media query changes at runtime, THE SYSTEM SHALL update mounted
+   cards without a reload.
+
+No-gos: no random per-render picks, no animation without a static path.
+
+Evidence: `src/replacements/selection.test.ts`, `src/card.test.ts`
+
+## US-010 Dynamic feeds stay correct
+
+Statement: When a feed recycles DOM nodes or loads more on scroll, I want only
+new or changed posts judged and stale cards cleared, so infinite scroll does
+not break.
+
+Criteria:
+1. THE SYSTEM SHALL mark posts with a state plus a signature of normalized
+   visible text; identical text SHALL skip re-evaluation.
+2. WHEN a transformed node's text changes, THE SYSTEM SHALL remove the card,
+   restore the post, and re-evaluate the new content.
+3. THE SYSTEM SHALL scan changed subtrees incrementally on mutation instead of
+   querying the whole document per mutation.
+4. WHEN settings disable or pause the engine, THE SYSTEM SHALL stop scanning
+   and restore every transformed post (fail-open).
+5. WHEN the provider fails with 429, 5xx, timeout, or network error, THE SYSTEM
+   SHALL pause new calls with growing backoff and re-check deferred posts after
+   the pause.
+6. THE SYSTEM SHALL cap in-flight Jev calls at 4 and SHALL not re-queue its own
+   cards in a mutation loop.
+
+No-gos: no permanent mark that ignores changed content, no full-document scan
+per mutation.
+
+Evidence: `src/marking.test.ts`, `src/backoff.test.ts`,
+`src/adapters/adapters.test.ts`
+
+## US-011 Privacy-safe diagnostics
+
+Statement: When something looks off, I want counts and outcomes I can copy, so
+I can tell whether the extension is working without leaking page text.
+
+Criteria:
+1. THE SYSTEM SHALL report per-tab counters
+   discovered/queued/evaluated/transformed/skipped/errors/restored and keep a
+   ring buffer capped at 100 outcomes in session storage.
+2. THE SYSTEM SHALL store outcomes with host, rule, asset, duration, error
+   kind, and character count only; it SHALL NOT store post text or the key.
+3. WHEN there has been no activity, THE SYSTEM SHALL say so and SHALL not
+   imply that quiet means healthy.
+4. THE SYSTEM SHALL offer Clear and Copy diagnostics; the copied text SHALL
+   contain no post text and no key.
+5. THE SYSTEM SHALL be reachable from both the popup and the options page.
+
+No-gos: no post text in the ring, no key in diagnostics.
+
+Evidence: `src/diagnostics.test.ts`, `src/background.ts`, `src/options/main.ts`
+
+## US-012 First-run setup and connection test
+
+Statement: When I open options after installing, I want a short path to a
+working setup and a way to verify my key, so I know the engine is wired up.
+
+Criteria:
+1. WHEN no key is saved or no rule is enabled, THE SYSTEM SHALL show the
+   three-step setup block; once both are true, THE SYSTEM SHALL hide it.
+2. WHEN "Test connection" is pressed, THE SYSTEM SHALL make exactly one
+   bounded Jev call with fixed synthetic text and report ok or fail with
+   elapsed milliseconds.
+3. THE SYSTEM SHALL not print, log, or store the key outside
+   `chrome.storage.local`; options SHALL read only a saved/missing boolean.
+4. WHEN no key is saved, "Test connection" SHALL report `no_key` without a
+   network call.
+
+No-gos: no key echo, no automatic repeated test calls.
+
+Evidence: `src/options/main.ts`, `src/background.ts`, `src/jev/key.ts`
+
+## US-013 Operator-supplied replacement media library
+
+Statement: When I add my own images or GIFs in settings, I want matched posts to
+draw from that pile at random and stay stable, so replacements feel welcome and
+local instead of stock art.
+
+Criteria:
+1. WHEN I choose one or more files in Options, THE SYSTEM SHALL accept PNG,
+   JPEG, WebP, and GIF, show a thumbnail and size for each, and offer a Remove
+   control per item.
+2. THE SYSTEM SHALL store original bytes in IndexedDB in the extension origin;
+   it SHALL NOT put media bytes or base64 in `chrome.storage`, and SHALL NOT
+   upload media or fetch any external asset.
+3. WHEN a post matches a rule, THE SYSTEM SHALL draw one library asset using a
+   deterministic function of the post text and rule id, so a re-render of the
+   same post keeps the same asset; the draw SHALL avoid the last 8 picks on the
+   page when an alternative exists.
+4. WHEN the library is empty, THE SYSTEM SHALL render every matched post as the
+   compact collapse card (rule name, caption, Show original) and SHALL show
+   exactly `Add images or GIFs to replace filtered posts. Without images, posts
+   are collapsed.` in Options.
+5. THE SYSTEM SHALL keep the card bounded (max width 480px, art area at most
+   120px), with an accessible caption and a keyboard-focusable Show original.
+6. WHEN `prefers-reduced-motion` matches, THE SYSTEM SHALL never animate a GIF:
+   it SHALL draw a still first frame, or collapse the post if no frame can be
+   produced.
+7. WHEN the extension restarts, THE SYSTEM SHALL still list and draw the same
+   library from IndexedDB.
+8. THE SYSTEM SHALL keep media file names, paths, and contents out of
+   diagnostics and out of `chrome.storage`.
+9. WHEN stored settings carry legacy `face`/`kitten`/`replacementMix` values,
+   THE SYSTEM SHALL load them without error and drop the legacy fields without
+   changing any rule's enabled flag.
+
+No-gos: no upload, no CDN, no image API, no media sent to Jev, no bundled
+placeholder art, no filenames on the page or in diagnostics.
+
+Evidence: `src/media/service.test.ts`, `src/media/selection.test.ts`,
+`src/media/store.ts`, `src/content.test.ts`, `src/options/main.test.ts`
+
+## US-014 Media validation, quotas, and fail-safe storage
+
+Statement: When I add a file that is unsafe, corrupt, oversized, or over quota,
+I want a clear per-file message and no broken state, so the library stays
+trustworthy.
+
+Criteria:
+1. THE SYSTEM SHALL sniff magic bytes and accept only PNG, JPEG, GIF (87a/89a),
+   and WebP; SVG and HTML SHALL be rejected as unsupported.
+2. WHEN a file fails to decode (corrupt/truncated) or exceeds 5 MB, THE SYSTEM
+   SHALL reject it with the file name and a specific reason, and SHALL not
+   store it.
+3. THE SYSTEM SHALL enforce 200 files and 100 MB total; over-quota and
+   IndexedDB quota errors SHALL surface as a clear message without crashing.
+4. THE SYSTEM SHALL add no browser permissions for media and SHALL make no
+   network request for media.
+
+No-gos: no silent failure, no storing rejected bytes, no permission widening.
+
+Evidence: `src/media/validate.test.ts`, `src/media/bytes.test.ts`,
+`src/media/service.test.ts`

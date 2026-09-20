@@ -8,7 +8,6 @@ function rule(overrides: Partial<Rule> & Pick<Rule, 'id'>): Rule {
     name: overrides.id,
     instructions: `Instruction for ${overrides.id}`,
     enabled: true,
-    face: 'collapse',
     ...overrides,
   };
 }

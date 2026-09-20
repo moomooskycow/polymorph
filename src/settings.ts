@@ -1,11 +1,13 @@
 import { DEFAULT_ALLOWLIST, EXAMPLE_RULES } from './defaults';
 import { normalizeHost } from './hosts';
-import type { Face, Rule, Settings } from './types';
+import type { Rule, Settings } from './types';
 
-const FACES: readonly Face[] = ['collapse', 'kitten', 'meme'];
 const RULE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-/** Non-secret settings shape. The OpenRouter key lives in `src/jev/key.ts`. */
+/**
+ * Non-secret settings shape. The OpenRouter key lives in `src/jev/key.ts`;
+ * replacement media lives in IndexedDB (`src/media/`), not in this object.
+ */
 export const SETTINGS_KEYS = ['masterEnabled', 'rules', 'allowlist'] as const;
 
 export function defaultSettings(): Settings {
@@ -16,7 +18,10 @@ export function defaultSettings(): Settings {
   };
 }
 
-/** Drops anything that is not a well-formed rule; ids must be unique slugs. */
+/**
+ * US-014 migration: old rule shapes are tolerated. Legacy `face`/`kitten`/
+ * `replacementMix` values are dropped, never interpreted as enable flags.
+ */
 export function sanitizeRules(input: unknown): Rule[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
@@ -35,7 +40,6 @@ export function sanitizeRules(input: unknown): Rule[] {
       name,
       instructions,
       enabled: candidate.enabled === true,
-      face: FACES.includes(candidate.face as Face) ? (candidate.face as Face) : 'collapse',
     });
   }
   return rules;
@@ -47,9 +51,7 @@ export function mergeSettings(raw: Record<string, unknown>): Settings {
   const masterEnabled =
     typeof raw.masterEnabled === 'boolean' ? raw.masterEnabled : base.masterEnabled;
   const rules = Array.isArray(raw.rules) ? sanitizeRules(raw.rules) : base.rules;
-  const allowlist = Array.isArray(raw.allowlist)
-    ? dedupeHosts(raw.allowlist)
-    : base.allowlist;
+  const allowlist = Array.isArray(raw.allowlist) ? dedupeHosts(raw.allowlist) : base.allowlist;
   return { masterEnabled, rules, allowlist };
 }
 
@@ -64,6 +66,13 @@ function dedupeHosts(input: unknown[]): string[] {
   return [...seen];
 }
 
+/**
+ * US-001 architecture decision: defaults are virtual. `mergeSettings` merges
+ * them into every read; nothing materializes them in storage at install time.
+ * The old install-time writer had a TOCTOU window (read an empty snapshot, an
+ * external write lands, the writer stores defaults and clobbers it). Readers
+ * cannot clobber anything.
+ */
 export async function loadSettings(): Promise<Settings> {
   const raw = await chrome.storage.local.get([...SETTINGS_KEYS]);
   return mergeSettings(raw as Record<string, unknown>);
@@ -71,16 +80,4 @@ export async function loadSettings(): Promise<Settings> {
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {
   await chrome.storage.local.set(patch);
-}
-
-/** Called on install: materializes defaults so the options page has rows. */
-export async function ensureDefaults(): Promise<Settings> {
-  const raw = await chrome.storage.local.get([...SETTINGS_KEYS]);
-  const merged = mergeSettings(raw as Record<string, unknown>);
-  await chrome.storage.local.set({
-    masterEnabled: merged.masterEnabled,
-    rules: merged.rules,
-    allowlist: merged.allowlist,
-  });
-  return merged;
 }

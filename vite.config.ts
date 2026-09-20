@@ -1,11 +1,10 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { defineConfig, type Plugin } from 'vite';
 
 /**
- * Copies the MV3 manifest and the bundled face SVGs into `dist/`.
- *
- * Vite hashes every other emitted asset; these two sets must keep stable
- * paths because the manifest and the README refer to them.
+ * Copies the MV3 manifest and the icon source into `dist/`. PNG icons arrive
+ * through `public/`, produced by scripts/build-icons.mjs before Vite runs.
+ * User replacement media lives in IndexedDB, never in the package.
  */
 function staticAssets(): Plugin {
   return {
@@ -16,13 +15,11 @@ function staticAssets(): Plugin {
         fileName: 'manifest.json',
         source: readFileSync(new URL('manifest.json', import.meta.url), 'utf8'),
       });
-      for (const file of readdirSync(new URL('assets/faces/', import.meta.url))) {
-        this.emitFile({
-          type: 'asset',
-          fileName: `assets/faces/${file}`,
-          source: readFileSync(new URL(`assets/faces/${file}`, import.meta.url)),
-        });
-      }
+      this.emitFile({
+        type: 'asset',
+        fileName: 'assets/icons/polymorph.svg',
+        source: readFileSync(new URL('assets/icons/polymorph.svg', import.meta.url)),
+      });
     },
   };
 }

@@ -6,12 +6,12 @@ import { normalizeText, precheck } from './precheck';
 const enabledRule = { ...EXAMPLE_RULES[1]!, enabled: true };
 
 function settings(overrides: Partial<Settings> = {}): Settings {
-  return {
+  const base: Settings = {
     masterEnabled: true,
     rules: [enabledRule],
     allowlist: [...DEFAULT_ALLOWLIST],
-    ...overrides,
   };
+  return Object.assign(base, overrides);
 }
 
 const longText = 'A post that is comfortably longer than forty visible characters.';

@@ -13,6 +13,16 @@ export const GATE_CONFIDENCE = 0.7;
 /** Posts with less visible text than this are never sent to Jev. */
 export const MIN_POST_CHARS = 40;
 
+/** US-014: how many recent user-media picks to avoid repeating on one page. */
+export const RECENT_PICK_LIMIT = 8;
+
+/** US-010: plain backoff after provider 429/timeouts. */
+export const BACKOFF_BASE_MS = 5_000;
+export const BACKOFF_MAX_MS = 60_000;
+
+/** US-011: recent-outcome ring buffer size. */
+export const DIAGNOSTIC_LIMIT = 100;
+
 const BASE_ALLOWLIST = [
   'x.com',
   'twitter.com',
@@ -33,7 +43,10 @@ export const DEFAULT_ALLOWLIST: readonly string[] = BASE_ALLOWLIST.flatMap((host
   `m.${host}`,
 ]);
 
-/** US-001: three examples ship disabled. */
+/**
+ * US-001: three examples ship disabled. Replacement media is chosen from the
+ * operator's library for every rule (US-014); rules carry no visual settings.
+ */
 export const EXAMPLE_RULES: readonly Rule[] = [
   {
     id: 'political-argument-explainers',
@@ -41,7 +54,6 @@ export const EXAMPLE_RULES: readonly Rule[] = [
     instructions:
       'The post is arguing politics or picking a partisan fight. Match insults, dunks, and tribal point-scoring. Do not match neutral explainers of election mechanics, how a policy works, or how government processes function.',
     enabled: false,
-    face: 'collapse',
   },
   {
     id: 'rage-bait',
@@ -49,7 +61,6 @@ export const EXAMPLE_RULES: readonly Rule[] = [
     instructions:
       'The post is engineered to provoke outrage rather than inform: baiting, inflammatory framing, or an "everyone is angry about this" hook. Do not match good-faith criticism or reporting that merely describes something upsetting.',
     enabled: false,
-    face: 'kitten',
   },
   {
     id: 'reply-guy',
@@ -57,6 +68,5 @@ export const EXAMPLE_RULES: readonly Rule[] = [
     instructions:
       'The post is an unsolicited correction or nitpick aimed at another person ("well, actually"), where the point is to be right rather than to help. Do not match genuine questions, teaching, or adding missing context in good faith.',
     enabled: false,
-    face: 'meme',
   },
 ];

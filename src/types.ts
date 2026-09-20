@@ -1,16 +1,12 @@
-/** Rule face on a collapsed bar. `collapse` keeps the bar plain. */
-export type Face = 'collapse' | 'kitten' | 'meme';
-
 /** One named English rule the operator wrote. */
 export interface Rule {
   /** Stable slug; used as the Jev question id. */
   id: string;
-  /** Short name shown on the collapsed bar. */
+  /** Short name shown on the card. */
   name: string;
   /** Full English instruction sent to Jev. */
   instructions: string;
   enabled: boolean;
-  face: Face;
 }
 
 /** Everything the engine needs except the OpenRouter key. */
@@ -29,7 +25,8 @@ export type LeaveReason =
   | 'no_key'
   | 'skipped_short'
   | 'jev_error'
-  | 'no_rule_matched';
+  | 'no_rule_matched'
+  | 'backoff';
 
 /** Background's answer to one classify request. */
 export type Decision =
@@ -37,11 +34,10 @@ export type Decision =
       verdict: 'collapse';
       ruleId: string;
       ruleName: string;
-      face: Face;
       probability: number;
       confidence: number;
     }
-  | { verdict: 'leave'; reason: LeaveReason };
+  | { verdict: 'leave'; reason: LeaveReason; retryAfterMs?: number };
 
 /** Per-tab engine state the content script needs. */
 export interface EngineState {
@@ -51,4 +47,19 @@ export interface EngineState {
   denied: boolean;
   enabledRules: number;
   keyPresent: boolean;
+}
+
+/** Cumulative per-tab engine counters (genuinely measured by content.ts). */
+export interface TabCounters {
+  discovered: number;
+  queued: number;
+  evaluated: number;
+  transformed: number;
+  skipped: number;
+  errors: number;
+  restored: number;
+}
+
+export function emptyCounters(): TabCounters {
+  return { discovered: 0, queued: 0, evaluated: 0, transformed: 0, skipped: 0, errors: 0, restored: 0 };
 }
